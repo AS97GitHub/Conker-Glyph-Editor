@@ -1,5 +1,7 @@
 # Conker Font Glyph Editor
 
+🇷🇺 Русский | 🇺🇸 [English](README.md)
+
 ⚠ Исходный код на раннем этапе разработки
 
 Визуальный редактор глифов для шрифтов Conker: Live & Reloaded (формат CAFF).
