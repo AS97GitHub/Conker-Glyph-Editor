@@ -1,5 +1,7 @@
 # Conker Glyph Editor
 
+🇺🇸 English | 🇷🇺 [Русский](README_RU.md)
+
 ⚠ Early development source code
 
 A visual glyph editor for Conker: Live & Reloaded fonts (CAFF format).
