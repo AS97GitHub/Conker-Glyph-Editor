@@ -30,11 +30,16 @@
 
 ## Запуск
 
+> ⚠️ В Windows для запуска скрипта можно использовать как `python`, так и `py` — в зависимости от того, как установлен Python в вашей системе.
+
+> ⚠️ В Linux может потребоваться использовать python3 вместо python.
+
 ```
 python conker_glyph_editor.py
 ```
 
 Либо сразу с файлами:
+
 ```
 python conker_glyph_editor.py путь\к\default.bin путь\к\текстуре.png
 ```
