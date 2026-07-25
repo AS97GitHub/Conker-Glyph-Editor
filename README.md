@@ -45,8 +45,8 @@ python conker_glyph_editor.py path\to\default.bin path\to\texture.png
 ## Usage
 
 1. **"Open .bin..."** — select a font file (for example, `default.bin` from `ConkerFont`).
-2. **"Open Texture..."** — select the extracted texture for the same font (BMP or PNG, for example one extracted with CrystalTile2 or your own export).
-3. Select the correct **profile** from the drop-down list (`ConkerFont` / `FrontendTitle`). Each profile uses different coordinate calibration coefficients.
+2. **"Open Texture..."** — select the extracted texture for the same font (BMP or PNG, for example one extracted with CrystalTile2, ImageHeat, or your own export).
+3. Select the correct **profile** from the drop-down list (`ConkerFont` / `ConkerFontJapanese` / `FrontendTitle` / `FrontendTitleJapanese`). Each profile is a fixed preset with the coordinate calibration coefficients already determined for that font (see "Important Note" below) — there is no interactive calibration step, just pick the profile matching the font you opened.
 4. The glyph list on the left lets you select a glyph. The selected glyph is highlighted on the texture with a light blue rectangle and corner handles.
 5. **Editing:**
    - Drag a corner handle to resize the glyph rectangle (`x0/y0/x1/y1`).
@@ -61,9 +61,32 @@ The editor modifies **only the bytes of the selected glyph record** (18 bytes pe
 
 ## Important Note
 
-The Y-coordinate decoding formula (`Y_DIV`) for each font was determined **empirically** by maximizing the match between the glyph rectangles and the actual character outlines on the texture. It has **not** been fully reconstructed from the game's disassembled code. This means:
+The coordinate decoding formula for each font is:
 
-- Within the editor, everything is internally consistent: what you see on screen (the glyph rectangle over the texture) exactly matches what will be written to the file.
-- However, there is no guarantee that the game interprets these bytes in exactly the same way at runtime. Minor differences are possible, especially along the Y axis. The X coordinate is considered much more reliable due to the discovered relationship: `X_DIV × texture_width = 16384`.
+```
+pixel = raw / DIV + OFFSET
+DIV   = 16384 / actual_used_texture_size_in_pixels
+```
 
-If possible, verify your changes in the actual game (for example, using XEMU). It is recommended to make small edits and test them before relying on the editor for large-scale modifications.
+where 16384 = 2¹⁴ — coordinates are stored in a fixed 14-bit normalized grid. The
+"actual used size" is the real width/height of the texture's content (for example what
+ImageHeat produces after trimming empty padding: 256×240 for ConkerFont, 512×203 for
+FrontendTitle), not the power-of-two file dimensions of the texture.
+
+This formula has been validated via IoU against the real textures of the known fonts
+(~0.85–0.87 average overlap between predicted and actual glyph outlines) and gives a
+single, structurally consistent logic for both X and Y, rather than two independently
+fitted numbers. However: it has **not** been fully verified through disassembly/debugging
+of the game's own code — a discrepancy with what the actual engine uses is still
+theoretically possible, especially for texture sizes not yet covered by the tested
+samples.
+
+If possible, verify your changes in the actual game (for example, using XEMU). It is
+recommended to make small edits and test them before relying on the editor for
+large-scale modifications.
+
+## Data format used by the library
+
+For a detailed description of the CAFF container format, the glyph table, and the
+character→glyph mapping table, see the project's accompanying documentation and the
+write-up of the reverse-engineering process.
