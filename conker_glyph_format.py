@@ -14,10 +14,16 @@ SENTINEL = 0xFFFF  # "No rectangle" marker (space, system glyphs)
 # Calibration parameters per font
 FONT_PROFILES = {
     "ConkerFont": {
-        "X_DIV": 64, "Y_DIV": 68.27, "X_OFFSET": -0.5, "Y_OFFSET": -0.5,
+        "X_DIV": 16384 / 256, "Y_DIV": 16384 / 240, "X_OFFSET": -0.5, "Y_OFFSET": -0.5,
+    },
+    "ConkerFontJapanese": {
+        "X_DIV": 16384 / 1024, "Y_DIV": 16384 / 772, "X_OFFSET": -1.5, "Y_OFFSET": -0.5,
     },
     "FrontendTitle": {
-        "X_DIV": 32, "Y_DIV": 80.7, "X_OFFSET": 0.5, "Y_OFFSET": -0.5,
+        "X_DIV": 16384 / 512, "Y_DIV": 16384 / 203, "X_OFFSET": 0.5, "Y_OFFSET": -0.5,
+    },
+    "FrontendTitleJapanese": {
+        "X_DIV": 16384 / 1024, "Y_DIV": 16384 / 335, "X_OFFSET": 0.5, "Y_OFFSET": -0.5,
     },
 }
 
