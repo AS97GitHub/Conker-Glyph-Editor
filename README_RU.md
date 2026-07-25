@@ -1,6 +1,12 @@
 # Conker Glyph Editor
 
-## 🇺🇸 [English](README.md) | 🇷🇺 Русский
+<table>
+<td>
+
+🇺🇸 [English](README.md) | 🇷🇺 Русский
+
+</td>
+</table>
 
 ⚠ Исходный код на ранней стадии разработки
 
