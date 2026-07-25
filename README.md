@@ -10,7 +10,6 @@ A visual glyph editor for Conker: Live & Reloaded fonts (CAFF format).
 
 - `conker_glyph_format.py` — library for reading and writing the font format (required by the editor)
 - `conker_glyph_editor.py` — the main graphical editor (tkinter)
-- `conker_glyph_editor_(calibration).py` — editor version with coordinate transformation calibration tools
 
 All files must be located in the same folder.
 
