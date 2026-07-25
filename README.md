@@ -1,16 +1,10 @@
 # Conker Glyph Editor
 
-<table>
-<td>
+#### ⚠ Early development source code
 
-🇺🇸 English | 🇷🇺 [Русский](README_RU.md)
+### _A visual glyph editor for Conker: Live & Reloaded fonts (CAFF format)._
 
-</td>
-</table>
-
-⚠ Early development source code
-
-A visual glyph editor for Conker: Live & Reloaded fonts (CAFF format).
+### 🇺🇸 English | 🇷🇺 [Русский](README_RU.md)
 
 ## Files
 
