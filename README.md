@@ -84,9 +84,3 @@ samples.
 If possible, verify your changes in the actual game (for example, using XEMU). It is
 recommended to make small edits and test them before relying on the editor for
 large-scale modifications.
-
-## Data format used by the library
-
-For a detailed description of the CAFF container format, the glyph table, and the
-character→glyph mapping table, see the project's accompanying documentation and the
-write-up of the reverse-engineering process.
