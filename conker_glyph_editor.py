@@ -119,25 +119,35 @@ class GlyphEditorApp:
         props.pack(fill=tk.X, padx=6, pady=6)
 
         self.prop_vars = {}
-        for i, label in enumerate(["index", "char", "advance", "x0", "y0", "x1", "y1"]):
+        prop_fields = [
+            ("index", "Index"),
+            ("char", "Char"),
+            ("unknown_hi", "Unknown hi (?)"),
+            ("unknown_lo", "Unknown lo (?)"),
+            ("x0", "Start X"),
+            ("y0", "Start Y"),
+            ("x1", "End X"),
+            ("y1", "End Y"),
+            ("field1_hi", "Y Bearing"),
+            ("field1_lo", "X Bearing"),
+            ("field2_hi", "Glyph Height"),
+            ("field2_lo", "Glyph Width"),
+            ("byte14", "Advance Width"),
+        ]
+        for key, label in prop_fields:
             row = ttk.Frame(props)
             row.pack(fill=tk.X, pady=2)
-            ttk.Label(row, text=label + ":", width=10).pack(side=tk.LEFT)
+            ttk.Label(row, text=label + ":", width=16).pack(side=tk.LEFT)
             var = tk.StringVar(value="")
-            entry = ttk.Entry(row, textvariable=var, width=16)
+            entry = ttk.Entry(row, textvariable=var, width=12)
             entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
-            self.prop_vars[label] = var
-            if label in ("index", "char"):
+            self.prop_vars[key] = var
+            if key in ("index", "char"):
                 entry.config(state="readonly")
 
         ttk.Button(props, text="Apply Changes", command=self.apply_property_edits).pack(
             fill=tk.X, pady=(8, 2)
         )
-
-        raw_frame = ttk.LabelFrame(right, text="Raw Entry Data (Reference)")
-        raw_frame.pack(fill=tk.X, padx=6, pady=6)
-        self.raw_text = tk.Text(raw_frame, height=8, width=32, font=("Consolas", 9), state="disabled")
-        self.raw_text.pack(fill=tk.BOTH, expand=True)
 
         help_frame = ttk.LabelFrame(right, text="Help / Info")
         help_frame.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
@@ -145,11 +155,34 @@ class GlyphEditorApp:
             "LMB on glyph on texture - select.\n\n"
             "Drag corner handle - resize rectangle.\n"
             "Drag center - move rectangle.\n\n"
-            "You can also manually enter x0/y0/x1/y1\n"
-            "(in texture pixels) and click\n"
+            "You can also manually enter Start/End\n"
+            "X/Y (in texture pixels) and click\n"
             "'Apply Changes'.\n\n"
-            "Y formula found empirically, not\n"
-            "100% verified by disassembly."
+            "VERIFIED IN-GAME (via XEMU):\n"
+            "- Glyph Height/Width (f2_hi/f2_lo):\n"
+            "  physical glyph size. Changing these\n"
+            "  visibly stretches/squashes the glyph\n"
+            "  on screen along Y/X. Stored as TWO\n"
+            "  independent bytes, not one number.\n"
+            "- Advance Width (byte14): horizontal\n"
+            "  step after this character - where\n"
+            "  the next one starts.\n"
+            "- Y/X Bearing (f1_hi/f1_lo): offset of\n"
+            "  the glyph from the baseline. Negative\n"
+            "  Y = lower, positive Y = higher.\n"
+            "  Negative X = left, positive X =\n"
+            "  right. Shown/entered as SIGNED bytes\n"
+            "  (-128..127).\n"
+            "- 'Unknown' (hi/lo): NO visible\n"
+            "  effect even at extreme test values\n"
+            "  (0 and 255), not just small changes.\n"
+            "  High byte always 0x00 - the 'two\n"
+            "  independent bytes' idea was tested\n"
+            "  and doesn't hold. Likely not read by\n"
+            "  the text renderer at all.\n\n"
+            "Y-axis pixel-conversion formula found\n"
+            "empirically, not 100% verified by\n"
+            "disassembly."
         )
         ttk.Label(help_frame, text=help_text, justify="left", wraplength=270).pack(
             anchor="nw", padx=4, pady=4
@@ -243,7 +276,7 @@ class GlyphEditorApp:
             char_disp = g.char if g.char.strip() else "·"
             special = " [special]" if g.is_special else ""
             self.glyph_listbox.insert(
-                tk.END, f"{g.index:3d}  {char_disp!r:>5s}  adv={g.advance:3d}{special}"
+                tk.END, f"{g.index:3d}  {char_disp!r:>5s}  adv={g.byte14:3d}{special}"
             )
 
     def on_listbox_select(self, event):
@@ -251,6 +284,19 @@ class GlyphEditorApp:
         if not sel:
             return
         self.select_glyph(sel[0])
+
+    @staticmethod
+    def _byte_to_signed(unsigned_val):
+        """Converts a raw 0-255 byte value to its signed int8 reading (-128..127)."""
+        return unsigned_val - 256 if unsigned_val > 127 else unsigned_val
+
+    @staticmethod
+    def _signed_to_byte(signed_val):
+        """Converts a signed int8 value (-128..127) back to the raw 0-255 byte
+        stored in the file."""
+        if not (-128 <= signed_val <= 127):
+            raise ValueError("value must be between -128 and 127 (it's a signed byte)")
+        return signed_val + 256 if signed_val < 0 else signed_val
 
     def select_glyph(self, index):
         if self.font is None or index is None or index >= len(self.font.glyphs):
@@ -260,20 +306,48 @@ class GlyphEditorApp:
 
         self.prop_vars["index"].set(str(g.index))
         self.prop_vars["char"].set(repr(g.char))
-        self.prop_vars["advance"].set(str(g.advance))
+        # This field (internal attribute name: advance, kept for backward
+        # compatibility) is stored as one uint16 in the file. CONFIRMED IN-GAME:
+        # no visible effect even at extreme test values (0 and 255). High byte is
+        # always 0x00 across the whole glyph table - shown here split into hi/lo
+        # bytes for consistency with field1/field2, so any future finding about
+        # either byte specifically is easy to test in isolation.
+        unk_hi, unk_lo = g.advance >> 8, g.advance & 0xFF
+        self.prop_vars["unknown_hi"].set(str(unk_hi))
+        self.prop_vars["unknown_lo"].set(str(unk_lo))
+        # field1 is stored as one uint16 in the file, but behaves as two independent
+        # bytes. CONFIRMED IN-GAME: hi byte = Y Bearing (vertical offset from the
+        # baseline - negative moves the glyph down, positive moves it up), lo byte =
+        # X Bearing (horizontal offset from the baseline - negative shifts left,
+        # positive shifts right). Displayed/edited here as SIGNED int8 (-128..127),
+        # since the raw unsigned readings (e.g. 254/255) only made sense once
+        # reinterpreted as small negative numbers (-2/-1).
+        f1_hi, f1_lo = g.field1 >> 8, g.field1 & 0xFF
+        self.prop_vars["field1_hi"].set(str(self._byte_to_signed(f1_hi)))
+        self.prop_vars["field1_lo"].set(str(self._byte_to_signed(f1_lo)))
+        # field2 is stored as one uint16 in the file, but behaves as two INDEPENDENT
+        # single-byte values. CONFIRMED IN-GAME: hi byte = Glyph Height, lo byte =
+        # Glyph Width - changing either one visibly stretches/squashes the glyph on
+        # screen along that axis (not just the atlas rectangle size).
+        f2_hi, f2_lo = g.field2 >> 8, g.field2 & 0xFF
+        self.prop_vars["field2_hi"].set(str(f2_hi))
+        self.prop_vars["field2_lo"].set(str(f2_lo))
+        # byte14 CONFIRMED IN-GAME to be the real Advance Width - it determines
+        # where the NEXT character starts, unlike the 'Unknown' hi/lo field above
+        # which showed no visible effect when changed in isolation.
+        self.prop_vars["byte14"].set(str(g.byte14))
 
         pixels = self.font.to_pixels(g)
         if pixels:
             x0, y0, x1, y1 = pixels
-            self.prop_vars["x0"].set(f"{x0:.1f}")
-            self.prop_vars["y0"].set(f"{y0:.1f}")
-            self.prop_vars["x1"].set(f"{x1:.1f}")
-            self.prop_vars["y1"].set(f"{y1:.1f}")
+            self.prop_vars["x0"].set(f"{x0:.0f}")
+            self.prop_vars["y0"].set(f"{y0:.0f}")
+            self.prop_vars["x1"].set(f"{x1:.0f}")
+            self.prop_vars["y1"].set(f"{y1:.0f}")
         else:
             for k in ("x0", "y0", "x1", "y1"):
                 self.prop_vars[k].set("(special glyph)")
 
-        self._update_raw_text(g)
         self._redraw_canvas()
 
         # Synchronize listbox selection
@@ -281,30 +355,42 @@ class GlyphEditorApp:
         self.glyph_listbox.selection_set(index)
         self.glyph_listbox.see(index)
 
-    def _update_raw_text(self, g):
-        self.raw_text.config(state="normal")
-        self.raw_text.delete("1.0", tk.END)
-        info = (
-            f"advance : {g.advance}\n"
-            f"field1  : {g.field1} (0x{g.field1:04x})\n"
-            f"field2  : {g.field2} (0x{g.field2:04x})\n"
-            f"x0_raw  : {g.x0_raw}\n"
-            f"x1_raw  : {g.x1_raw}\n"
-            f"y0_raw  : {g.y0_raw}\n"
-            f"y1_raw  : {g.y1_raw}\n"
-            f"byte14  : {g.byte14}\n"
-            f"byte15  : {g.byte15}\n"
-            f"special : {g.is_special}\n"
-        )
-        self.raw_text.insert("1.0", info)
-        self.raw_text.config(state="disabled")
-
     def apply_property_edits(self):
         if self.font is None or self.selected_index is None:
             return
         g = self.font.glyphs[self.selected_index].clone()
         try:
-            g.advance = int(self.prop_vars["advance"].get())
+            unk_hi = int(self.prop_vars["unknown_hi"].get())
+            unk_lo = int(self.prop_vars["unknown_lo"].get())
+            if not (0 <= unk_hi <= 255):
+                raise ValueError("Unknown hi must be an integer between 0 and 255 (it's a single byte)")
+            if not (0 <= unk_lo <= 255):
+                raise ValueError("Unknown lo must be an integer between 0 and 255 (it's a single byte)")
+            g.advance = (unk_hi << 8) | unk_lo
+
+            # field1_hi and field1_lo are treated as two INDEPENDENT single bytes,
+            # entered/displayed as SIGNED int8 (-128..127) - see select_glyph for why.
+            f1_hi_signed = int(self.prop_vars["field1_hi"].get())
+            f1_lo_signed = int(self.prop_vars["field1_lo"].get())
+            f1_hi = self._signed_to_byte(f1_hi_signed)
+            f1_lo = self._signed_to_byte(f1_lo_signed)
+            g.field1 = (f1_hi << 8) | f1_lo
+
+            # field2_hi and field2_lo are treated as two INDEPENDENT single bytes
+            # (not as one combined 16-bit number - see select_glyph for why), so each
+            # is validated and packed separately.
+            f2_hi = int(self.prop_vars["field2_hi"].get())
+            f2_lo = int(self.prop_vars["field2_lo"].get())
+            if not (0 <= f2_hi <= 255):
+                raise ValueError("Glyph Height must be an integer between 0 and 255 (it's a single byte)")
+            if not (0 <= f2_lo <= 255):
+                raise ValueError("Glyph Width must be an integer between 0 and 255 (it's a single byte)")
+            g.field2 = (f2_hi << 8) | f2_lo
+
+            byte14_val = int(self.prop_vars["byte14"].get())
+            if not (0 <= byte14_val <= 255):
+                raise ValueError("Advance Width must be an integer between 0 and 255 (it's a single byte in the file)")
+            g.byte14 = byte14_val
             if not g.is_special:
                 x0 = float(self.prop_vars["x0"].get())
                 y0 = float(self.prop_vars["y0"].get())
@@ -445,10 +531,10 @@ class GlyphEditorApp:
         self.font.write_glyph(g)
         self.unsaved_changes = True
 
-        self.prop_vars["x0"].set(f"{min(x0,x1):.1f}")
-        self.prop_vars["y0"].set(f"{min(y0,y1):.1f}")
-        self.prop_vars["x1"].set(f"{max(x0,x1):.1f}")
-        self.prop_vars["y1"].set(f"{max(y0,y1):.1f}")
+        self.prop_vars["x0"].set(f"{min(x0,x1):.0f}")
+        self.prop_vars["y0"].set(f"{min(y0,y1):.0f}")
+        self.prop_vars["x1"].set(f"{max(x0,x1):.0f}")
+        self.prop_vars["y1"].set(f"{max(y0,y1):.0f}")
 
         self._redraw_canvas()
 
