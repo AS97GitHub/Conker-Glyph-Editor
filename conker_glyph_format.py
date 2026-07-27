@@ -23,7 +23,7 @@ FONT_PROFILES = {
         "X_DIV": 16384 / 512, "Y_DIV": 16384 / 203, "X_OFFSET": 0.5, "Y_OFFSET": -0.5,
     },
     "FrontendTitleJapanese": {
-        "X_DIV": 16384 / 1024, "Y_DIV": 16384 / 335, "X_OFFSET": 0.5, "Y_OFFSET": -0.5,
+        "X_DIV": 16384 / 1024, "Y_DIV": 16384 / 335, "X_OFFSET": -0.5, "Y_OFFSET": -0.5,
     },
 }
 
@@ -39,7 +39,48 @@ CHARMAP_EXTRA = {
 
 
 class Glyph:
-    """A single entry in the glyph table, containing raw and unpacked fields."""
+    """A single entry in the glyph table, containing raw and unpacked fields.
+
+    Field meanings, CONFIRMED IN-GAME (via XEMU, by editing one field at a time
+    and comparing screenshots against an unmodified baseline). Internal attribute
+    names below are kept as-is for backward compatibility with existing code/data;
+    the "display name" column is what the editor UI now shows the user.
+
+    attribute        | display name     | meaning
+    ------------------------------------------------------------------------------
+    advance          | Unknown          | No visible effect when changed in
+                      |                  | isolation. Actual role unconfirmed - may
+                      |                  | be unused by the renderer, or the two
+                      |                  | bytes it's made of could be independent
+                      |                  | parameters unrelated to each other
+                      |                  | (not yet tested split apart).
+    x0_raw            | Start X          | Texture-atlas rectangle, left edge.
+    y0_raw            | Start Y          | Texture-atlas rectangle, top edge.
+    x1_raw            | End X            | Texture-atlas rectangle, right edge.
+    y1_raw            | End Y            | Texture-atlas rectangle, bottom edge.
+    field1 (hi byte)  | Y Bearing        | Vertical offset of the glyph relative to
+                      |                  | the baseline. Negative = glyph sits
+                      |                  | lower (below baseline); positive = glyph
+                      |                  | sits higher (above baseline). Signed int8.
+    field1 (lo byte)  | X Bearing        | Horizontal offset of the glyph relative
+                      |                  | to the baseline. Negative = shifted left;
+                      |                  | positive = shifted right. Signed int8.
+    field2 (hi byte)  | Glyph Height     | Physical glyph height. Also rescales
+                      |                  | (stretches/squashes) the glyph on the Y
+                      |                  | axis when changed. Unsigned.
+    field2 (lo byte)  | Glyph Width      | Physical glyph width. Also rescales
+                      |                  | (stretches/squashes) the glyph on the X
+                      |                  | axis when changed. Unsigned.
+    byte14            | Advance Width    | Horizontal step after this character -
+                      | (or Advance)     | determines where the next character
+                      |                  | starts. This is what `advance` (above)
+                      |                  | was originally assumed to do. Unsigned.
+    byte15            | -                | Always observed as 0x00; likely padding.
+
+    x0_raw..y1_raw use the FONT_PROFILES pixel-conversion formula (raw / DIV +
+    OFFSET). field1/field2 are stored as one uint16 each in the file but behave
+    as two INDEPENDENT single bytes - not as one combined 16-bit number.
+    """
 
     __slots__ = (
         "index", "advance", "field1", "field2",
