@@ -27,15 +27,26 @@ FONT_PROFILES = {
     },
 }
 
-# Character-to-glyph mapping table: block ranges inside .data
-CHARMAP_BLOCKS = [
+# Character-to-glyph mapping table.
+#
+# Previously this was a set of hardcoded byte offsets found by manually inspecting
+# ConkerFont's default.bin. Those offsets turned out to be specific to that one
+# file - other fonts (FrontendTitle, Japanese variants, etc.) place the charmap
+# at different offsets, since it directly follows the glyph table and the glyph
+# table's size varies per font (different glyph_count).
+#
+# Instead, the charmap is now found AUTOMATICALLY by scanning for its structural
+# signature: it's a sequence of (uint16 code, uint16 glyph_index) pairs, where
+# glyph_index is always a valid index into the glyph table. See
+# ConkerFont._detect_charmap() below for the algorithm. The hardcoded values are
+# kept only as a documented fallback/reference for ConkerFont specifically.
+_LEGACY_CHARMAP_BLOCKS_CONKERFONT = [
     (0x1392, 0x1412), (0x1416, 0x1496), (0x149a, 0x151a),
-    (0x15a2, 0x1622), (0x1626, 0x16a6), (0x16aa, 0x1726),
+    (0x15a2, 0x1622), (0x1626, 0x172a),  # NOTE: end corrected from 0x1726 to 0x172a -
+                                          # the original hardcoded range was missing
+                                          # one entry (0xFF 'ÿ' -> glyph 153), found
+                                          # by the automatic detector.
 ]
-CHARMAP_EXTRA = {
-    0x176e: '18209c0019205600', 0x17aa: '26209b00', 0x191a: '78018100',
-    0x1986: '92015000', 0x19d2: 'ac204000', 0x2e46: 'a125c600',
-}
 
 
 class Glyph:
@@ -46,18 +57,28 @@ class Glyph:
     names below are kept as-is for backward compatibility with existing code/data;
     the "display name" column is what the editor UI now shows the user.
 
-    attribute        | display name     | meaning
-    ------------------------------------------------------------------------------
-    advance          | Unknown          | No visible effect when changed in
-                      |                  | isolation. Actual role unconfirmed - may
-                      |                  | be unused by the renderer, or the two
-                      |                  | bytes it's made of could be independent
-                      |                  | parameters unrelated to each other
-                      |                  | (not yet tested split apart).
+    attribute         | display name     | meaning
+    --------------------------------------------------------------------------------
+    unknown_field     | Unknown          | CONFIRMED IN-GAME: no visible effect even
+                      |                  | at extreme test values (0 and 255), not
+                      |                  | just small changes. High byte is always
+                      |                  | 0x00 across the whole glyph table (not a
+                      |                  | second independent byte - the "two
+                      |                  | independent parameters" idea was tested
+                      |                  | and does not hold at the byte-split
+                      |                  | level). Low byte holds a plausible but
+                      |                  | apparently inert number (0-55 range).
+                      |                  | Most likely explanation: not read by the
+                      |                  | text renderer at all - possibly legacy/
+                      |                  | tooling data, or used by some other game
+                      |                  | system unrelated to on-screen glyph
+                      |                  | drawing. Not fully ruled out.
+    --------------------------------------------------------------------------------
     x0_raw            | Start X          | Texture-atlas rectangle, left edge.
     y0_raw            | Start Y          | Texture-atlas rectangle, top edge.
     x1_raw            | End X            | Texture-atlas rectangle, right edge.
     y1_raw            | End Y            | Texture-atlas rectangle, bottom edge.
+    --------------------------------------------------------------------------------
     field1 (hi byte)  | Y Bearing        | Vertical offset of the glyph relative to
                       |                  | the baseline. Negative = glyph sits
                       |                  | lower (below baseline); positive = glyph
@@ -65,16 +86,19 @@ class Glyph:
     field1 (lo byte)  | X Bearing        | Horizontal offset of the glyph relative
                       |                  | to the baseline. Negative = shifted left;
                       |                  | positive = shifted right. Signed int8.
+    --------------------------------------------------------------------------------
     field2 (hi byte)  | Glyph Height     | Physical glyph height. Also rescales
                       |                  | (stretches/squashes) the glyph on the Y
                       |                  | axis when changed. Unsigned.
     field2 (lo byte)  | Glyph Width      | Physical glyph width. Also rescales
                       |                  | (stretches/squashes) the glyph on the X
                       |                  | axis when changed. Unsigned.
+    --------------------------------------------------------------------------------
     byte14            | Advance Width    | Horizontal step after this character -
-                      | (or Advance)     | determines where the next character
-                      |                  | starts. This is what `advance` (above)
+                      |                  | determines where the next character
+                      |                  | starts. This is what `unknown_field` (above)
                       |                  | was originally assumed to do. Unsigned.
+    --------------------------------------------------------------------------------
     byte15            | -                | Always observed as 0x00; likely padding.
 
     x0_raw..y1_raw use the FONT_PROFILES pixel-conversion formula (raw / DIV +
@@ -83,14 +107,14 @@ class Glyph:
     """
 
     __slots__ = (
-        "index", "advance", "field1", "field2",
+        "index", "unknown_field", "field1", "field2",
         "x0_raw", "x1_raw", "y0_raw", "y1_raw",
         "byte14", "byte15", "is_special", "char",
     )
 
     def __init__(self, index):
         self.index = index
-        self.advance = 0
+        self.unknown_field = 0
         self.field1 = 0
         self.field2 = 0
         self.x0_raw = 0
@@ -157,7 +181,7 @@ class ConkerFont:
             off = GLYPH_TABLE_OFFSET + i * GLYPH_REC_SIZE
             rec = self.data[off:off + 16]
             g = Glyph(i)
-            g.advance = struct.unpack("<H", rec[0:2])[0]
+            g.unknown_field = struct.unpack("<H", rec[0:2])[0]
             g.field1 = struct.unpack("<H", rec[2:4])[0]
             g.field2 = struct.unpack("<H", rec[4:6])[0]
             g.x0_raw = struct.unpack("<H", rec[6:8])[0]
@@ -174,17 +198,87 @@ class ConkerFont:
         return glyphs
 
     def _read_charmap(self):
+        """Automatically finds every (code, glyph_index) pair in the charmap
+        region of the file, without relying on any hardcoded offsets.
+
+        Two-pass approach:
+          1. Scan for long runs of CONSECUTIVE character codes (e.g. 0x20, 0x21,
+             0x22, ...) where each entry's glyph_index is a valid index into the
+             glyph table. A run of several such entries in a row is extremely
+             unlikely to happen by chance, so this reliably locates the real
+             charmap blocks and - just as importantly - their 4-byte alignment
+             within the file.
+          2. Re-scan the whole region at that confirmed alignment, this time
+             accepting ANY single valid (code, glyph_index) pair, not just ones
+             that are part of a long run. This picks up the sparse/isolated
+             entries (typographic quotes, €, etc.) that sit between the main
+             blocks without a long consecutive run of their own.
+
+        Falls back to the legacy hardcoded ConkerFont offsets if no candidate
+        region can be found at all (e.g. a corrupted or very unusual file).
+        """
+        search_start = GLYPH_TABLE_OFFSET + self.glyph_count * GLYPH_REC_SIZE
+        search_end = min(search_start + 0x2000, len(self.data))  # generous safety margin
+
         charmap = {}
-        for start, end in CHARMAP_BLOCKS:
-            block = self.data[start:end]
-            for i in range(0, len(block) - 3, 4):
-                code, idx = struct.unpack("<HH", block[i:i + 4])
-                charmap[code] = idx
-        for off, hexstr in CHARMAP_EXTRA.items():
-            raw = bytes.fromhex(hexstr)
-            for i in range(0, len(raw) - 3, 4):
-                code, idx = struct.unpack("<HH", raw[i:i + 4])
-                charmap[code] = idx
+        alignments_seen = set()
+        pos = search_start
+        MIN_RUN = 8  # long enough that a chance match is effectively impossible
+
+        while pos + 4 <= search_end:
+            code, idx = struct.unpack("<HH", self.data[pos:pos + 4])
+            if idx < self.glyph_count and 0x20 <= code < 0x2200:
+                p = pos
+                expected = code
+                run = {}
+                while p + 4 <= search_end:
+                    c, gi = struct.unpack("<HH", self.data[p:p + 4])
+                    if c != expected or gi >= self.glyph_count:
+                        break
+                    run[c] = gi
+                    expected += 1
+                    p += 4
+                if len(run) >= MIN_RUN:
+                    charmap.update(run)
+                    alignments_seen.add(pos % 4)
+                    pos = p
+                    continue
+            pos += 2
+
+        if alignments_seen:
+            for align in alignments_seen:
+                pos2 = search_start + ((align - search_start) % 4)
+                while pos2 + 4 <= search_end:
+                    code, idx = struct.unpack("<HH", self.data[pos2:pos2 + 4])
+                    if idx < self.glyph_count and 0x20 <= code < 0x2200:
+                        charmap[code] = idx
+                    pos2 += 4
+
+        if not charmap:
+            # Fallback: nothing auto-detected (unexpected file layout) - use the
+            # legacy hardcoded ConkerFont ranges as a last resort.
+            for start, end in _LEGACY_CHARMAP_BLOCKS_CONKERFONT:
+                block = self.data[start:end]
+                for i in range(0, len(block) - 3, 4):
+                    code, idx = struct.unpack("<HH", block[i:i + 4])
+                    charmap[code] = idx
+
+        # The fallback glyph (shown for missing/unmapped characters) is recorded
+        # separately in the font header (fallback CODE, not glyph index) rather
+        # than living inside the main charmap blocks - and it can sit at a
+        # different byte alignment than the rest of the charmap (observed one
+        # entry off, i.e. %4 == 2 instead of %4 == 0), so it needs its own
+        # dedicated search rather than being picked up by the aligned scan above.
+        fallback_code = struct.unpack("<I", self.data[0x4d8:0x4dc])[0]
+        if fallback_code and fallback_code not in charmap:
+            pos3 = search_start
+            while pos3 + 4 <= search_end:
+                code, idx = struct.unpack("<HH", self.data[pos3:pos3 + 4])
+                if code == fallback_code and idx < self.glyph_count:
+                    charmap[code] = idx
+                    break
+                pos3 += 2
+
         return charmap
 
     def _apply_charmap_to_glyphs(self):
@@ -203,7 +297,7 @@ class ConkerFont:
         off = GLYPH_TABLE_OFFSET + i * GLYPH_REC_SIZE
         rec = struct.pack(
             "<HHHHHHHBB",
-            glyph.advance,
+            glyph.unknown_field,
             glyph.field1,
             glyph.field2,
             glyph.x0_raw,
