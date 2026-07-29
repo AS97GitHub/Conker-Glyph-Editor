@@ -28,7 +28,8 @@ class GlyphEditorApp:
         self.tex_photo = None     # ImageTk.PhotoImage for display
         self.zoom = DEFAULT_ZOOM
         self.selected_index = None
-        self.drag_mode = None     # None | "move" | "x0" | "y0" | "x1" | "y1"
+        self.current_file_path = None  # Track current file path
+        self.drag_mode = None     # None | "move" | "x0y0" | "x1y0" | "x0y1" | "x1y1"
         self.drag_start = None
         self.drag_orig_rect = None
         self.unsaved_changes = False
@@ -48,7 +49,7 @@ class GlyphEditorApp:
         self.profile_var = tk.StringVar(value="ConkerFont")
         profile_combo = ttk.Combobox(
             toolbar, textvariable=self.profile_var,
-            values=list(FONT_PROFILES.keys()), state="readonly", width=14
+            values=list(FONT_PROFILES.keys()), state="readonly", width=20
         )
         profile_combo.pack(side=tk.LEFT)
         profile_combo.bind("<<ComboboxSelected>>", lambda e: self.on_profile_changed())
@@ -70,7 +71,7 @@ class GlyphEditorApp:
         main.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
         # Left panel: glyph list
-        left = ttk.Frame(main, width=260)
+        left = ttk.Frame(main, width=235)
         left.pack(side=tk.LEFT, fill=tk.Y)
         left.pack_propagate(False)
 
@@ -111,7 +112,7 @@ class GlyphEditorApp:
         self.canvas.bind("<ButtonRelease-1>", self.on_canvas_release)
 
         # Right panel: selected glyph properties
-        right = ttk.Frame(main, width=300)
+        right = ttk.Frame(main, width=265)
         right.pack(side=tk.RIGHT, fill=tk.Y)
         right.pack_propagate(False)
 
@@ -137,7 +138,7 @@ class GlyphEditorApp:
         for key, label in prop_fields:
             row = ttk.Frame(props)
             row.pack(fill=tk.X, pady=2)
-            ttk.Label(row, text=label + ":", width=16).pack(side=tk.LEFT)
+            ttk.Label(row, text=label + ":", width=16, anchor="e").pack(side=tk.LEFT, padx=(0, 2))
             var = tk.StringVar(value="")
             entry = ttk.Entry(row, textvariable=var, width=12)
             entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
@@ -151,7 +152,20 @@ class GlyphEditorApp:
 
         help_frame = ttk.LabelFrame(right, text="Help / Info")
         help_frame.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
-        help_text = (
+        
+        # Create scrollable text widget for help
+        help_scrollbar = ttk.Scrollbar(help_frame)
+        help_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        help_text = tk.Text(help_frame, wrap=tk.WORD, width=30, height=10,
+                            yscrollcommand=help_scrollbar.set,
+                            font=("Tahoma", 9), state=tk.DISABLED,
+                            relief=tk.FLAT, highlightthickness=0,
+                            background="#f0f0f0")
+        help_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        help_scrollbar.config(command=help_text.yview)
+        
+        help_content = (
             "LMB on glyph on texture - select.\n\n"
             "Drag corner handle - resize rectangle.\n"
             "Drag center - move rectangle.\n\n"
@@ -184,9 +198,9 @@ class GlyphEditorApp:
             "empirically, not 100% verified by\n"
             "disassembly."
         )
-        ttk.Label(help_frame, text=help_text, justify="left", wraplength=270).pack(
-            anchor="nw", padx=4, pady=4
-        )
+        help_text.config(state=tk.NORMAL)
+        help_text.insert(tk.END, help_content)
+        help_text.config(state=tk.DISABLED)
 
     # ------------------------------------------------------------- actions
 
@@ -202,8 +216,30 @@ class GlyphEditorApp:
         except Exception as e:
             messagebox.showerror("Loading Error", str(e))
             return
+        
+        # Check if opening the same file
+        same_file = (self.current_file_path == path)
+        self.current_file_path = path
+        
         self.unsaved_changes = False
+        
+        if same_file and self.selected_index is not None and self.selected_index < len(self.font.glyphs):
+            # Keep the selection if it's still valid
+            saved_index = self.selected_index
+        else:
+            # Reset selection for new file or invalid index
+            self.selected_index = None
+            saved_index = None
+            # Clear property fields
+            for var in self.prop_vars.values():
+                var.set("")
+        
         self._refresh_glyph_list()
+        
+        # Restore UI state if keeping selection
+        if saved_index is not None:
+            self.select_glyph(saved_index)
+        
         self._redraw_canvas()
         self.status_var.set(
             f"Loaded {os.path.basename(path)}: {self.font.glyph_count} glyphs, "
@@ -218,7 +254,22 @@ class GlyphEditorApp:
         if not path:
             return
         try:
-            self.tex_image = Image.open(path).convert("RGB")
+            img = Image.open(path)
+            # Validate image format
+            if img.format not in ("PNG", "BMP"):
+                messagebox.showwarning(
+                    "Texture Format Warning",
+                    f"Image format '{img.format}' may not be supported. PNG or BMP recommended."
+                )
+            # Validate image dimensions
+            if img.width < 1 or img.height < 1:
+                raise ValueError("Image must have positive dimensions")
+            if img.width > 1024 or img.height > 1024:
+                messagebox.showwarning(
+                    "Texture Size Warning",
+                    f"Image dimensions ({img.width}x{img.height}) are very large. This may cause performance issues."
+                )
+            self.tex_image = img.convert("RGB")
         except Exception as e:
             messagebox.showerror("Texture Loading Error", str(e))
             return
@@ -231,6 +282,17 @@ class GlyphEditorApp:
         if self.font is not None:
             self.font.profile_name = self.profile_var.get()
             self.font.profile = FONT_PROFILES[self.profile_var.get()]
+            # Check if selected_index is still valid after profile change
+            if self.selected_index is not None and self.selected_index >= len(self.font.glyphs):
+                self.selected_index = None
+                # Clear selection in listbox
+                self.glyph_listbox.selection_clear(0, tk.END)
+                # Clear property fields
+                for var in self.prop_vars.values():
+                    var.set("")
+            elif self.selected_index is not None:
+                # Even if index is valid, clear listbox selection to avoid inconsistencies
+                self.glyph_listbox.selection_clear(0, tk.END)
             self._redraw_canvas()
 
     def on_zoom_changed(self):
@@ -306,13 +368,13 @@ class GlyphEditorApp:
 
         self.prop_vars["index"].set(str(g.index))
         self.prop_vars["char"].set(repr(g.char))
-        # This field (internal attribute name: advance, kept for backward
+        # This field (internal attribute name: unknown_field, kept for backward
         # compatibility) is stored as one uint16 in the file. CONFIRMED IN-GAME:
         # no visible effect even at extreme test values (0 and 255). High byte is
         # always 0x00 across the whole glyph table - shown here split into hi/lo
         # bytes for consistency with field1/field2, so any future finding about
         # either byte specifically is easy to test in isolation.
-        unk_hi, unk_lo = g.advance >> 8, g.advance & 0xFF
+        unk_hi, unk_lo = g.unknown_field >> 8, g.unknown_field & 0xFF
         self.prop_vars["unknown_hi"].set(str(unk_hi))
         self.prop_vars["unknown_lo"].set(str(unk_lo))
         # field1 is stored as one uint16 in the file, but behaves as two independent
@@ -366,7 +428,7 @@ class GlyphEditorApp:
                 raise ValueError("Unknown hi must be an integer between 0 and 255 (it's a single byte)")
             if not (0 <= unk_lo <= 255):
                 raise ValueError("Unknown lo must be an integer between 0 and 255 (it's a single byte)")
-            g.advance = (unk_hi << 8) | unk_lo
+            g.unknown_field = (unk_hi << 8) | unk_lo
 
             # field1_hi and field1_lo are treated as two INDEPENDENT single bytes,
             # entered/displayed as SIGNED int8 (-128..127) - see select_glyph for why.
@@ -436,7 +498,7 @@ class GlyphEditorApp:
                 outline=color, width=width, tags=(f"glyph_{g.index}",)
             )
 
-        if self.selected_index is not None:
+        if self.selected_index is not None and self.selected_index < len(self.font.glyphs):
             g = self.font.glyphs[self.selected_index]
             pixels = self.font.to_pixels(g)
             if pixels:
@@ -526,15 +588,21 @@ class GlyphEditorApp:
         elif self.drag_mode == "x1y1":
             x1, y1 = x1 + dx, y1 + dy
 
+        # Round coordinates to integers to avoid decimal values
+        x0_rounded = round(min(x0, x1))
+        y0_rounded = round(min(y0, y1))
+        x1_rounded = round(max(x0, x1))
+        y1_rounded = round(max(y0, y1))
+
         g = self.font.glyphs[self.selected_index].clone()
-        self.font.set_pixels(g, min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1))
+        self.font.set_pixels(g, x0_rounded, y0_rounded, x1_rounded, y1_rounded)
         self.font.write_glyph(g)
         self.unsaved_changes = True
 
-        self.prop_vars["x0"].set(f"{min(x0,x1):.0f}")
-        self.prop_vars["y0"].set(f"{min(y0,y1):.0f}")
-        self.prop_vars["x1"].set(f"{max(x0,x1):.0f}")
-        self.prop_vars["y1"].set(f"{max(y0,y1):.0f}")
+        self.prop_vars["x0"].set(f"{x0_rounded}")
+        self.prop_vars["y0"].set(f"{y0_rounded}")
+        self.prop_vars["x1"].set(f"{x1_rounded}")
+        self.prop_vars["y1"].set(f"{y1_rounded}")
 
         self._redraw_canvas()
 
@@ -567,7 +635,16 @@ def main():
     if len(sys.argv) >= 3:
         tex_path = sys.argv[2]
         if os.path.exists(tex_path):
-            app.tex_image = Image.open(tex_path).convert("RGB")
+            try:
+                img = Image.open(tex_path)
+                if img.format not in ("PNG", "BMP"):
+                    print(f"Warning: Image format '{img.format}' may not be supported. PNG or BMP recommended.")
+                if img.width < 1 or img.height < 1:
+                    raise ValueError("Image must have positive dimensions")
+                app.tex_image = img.convert("RGB")
+            except Exception as e:
+                print(f"Error loading texture: {e}")
+                app.tex_image = None
     if len(sys.argv) >= 2:
         app._redraw_canvas()
 
