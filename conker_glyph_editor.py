@@ -129,16 +129,16 @@ class GlyphEditorApp:
             ("y0", "Start Y"),
             ("x1", "End X"),
             ("y1", "End Y"),
-            ("field1_hi", "Y Bearing"),
-            ("field1_lo", "X Bearing"),
-            ("field2_hi", "Glyph Height"),
-            ("field2_lo", "Glyph Width"),
+            ("field1_hi", "Y Bearing (-↑/+↓)"),
+            ("field1_lo", "X Bearing (-←/+→)"),
+            ("field2_hi", "Glyph Height (↕)"),
+            ("field2_lo", "Glyph Width (↔)"),
             ("byte14", "Advance Width"),
         ]
         for key, label in prop_fields:
             row = ttk.Frame(props)
             row.pack(fill=tk.X, pady=2)
-            ttk.Label(row, text=label + ":", width=16, anchor="e").pack(side=tk.LEFT, padx=(0, 2))
+            ttk.Label(row, text=label + ":", width=17, anchor="e").pack(side=tk.LEFT, padx=(0, 2))
             var = tk.StringVar(value="")
             entry = ttk.Entry(row, textvariable=var, width=12)
             entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
@@ -182,8 +182,8 @@ class GlyphEditorApp:
             "  step after this character - where\n"
             "  the next one starts.\n"
             "- Y/X Bearing (f1_hi/f1_lo): offset of\n"
-            "  the glyph from the baseline. Negative\n"
-            "  Y = lower, positive Y = higher.\n"
+            "  the glyph from the baseline. Positive\n"
+            "  Y = lower, negative Y = higher.\n"
             "  Negative X = left, positive X =\n"
             "  right. Shown/entered as SIGNED bytes\n"
             "  (-128..127).\n"
@@ -379,7 +379,7 @@ class GlyphEditorApp:
         self.prop_vars["unknown_lo"].set(str(unk_lo))
         # field1 is stored as one uint16 in the file, but behaves as two independent
         # bytes. CONFIRMED IN-GAME: hi byte = Y Bearing (vertical offset from the
-        # baseline - negative moves the glyph down, positive moves it up), lo byte =
+        # baseline - positive moves the glyph down, negative moves it up), lo byte =
         # X Bearing (horizontal offset from the baseline - negative shifts left,
         # positive shifts right). Displayed/edited here as SIGNED int8 (-128..127),
         # since the raw unsigned readings (e.g. 254/255) only made sense once
