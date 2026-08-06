@@ -247,6 +247,8 @@ class ConkerFont:
         charmap = {}
         charmap_offsets = {}  # code -> file offset of the 4-byte (code, glyph_idx) entry
         alignments_seen = set()
+        first_run_start = None
+        last_run_end = search_start
         pos = search_start
         MIN_RUN = 8  # long enough that a chance match is effectively impossible
 
@@ -269,19 +271,48 @@ class ConkerFont:
                     charmap.update(run)
                     charmap_offsets.update(run_offsets)
                     alignments_seen.add(pos % 4)
+                    if first_run_start is None:
+                        first_run_start = pos
+                    last_run_end = max(last_run_end, p)
                     pos = p
                     continue
             pos += 2
 
         if alignments_seen:
+            # Collect all sparse-pass candidates first (code -> [(glyph_idx,
+            # offset), ...]) instead of writing them straight into charmap, so
+            # conflicts can be resolved afterward.
+            sparse_by_glyph = {}
             for align in alignments_seen:
                 pos2 = search_start + ((align - search_start) % 4)
                 while pos2 + 4 <= search_end:
                     code, idx = struct.unpack("<HH", self.data[pos2:pos2 + 4])
                     if idx < self.glyph_count and 0x20 <= code < max_code:
-                        charmap[code] = idx
-                        charmap_offsets[code] = pos2
+                        sparse_by_glyph.setdefault(idx, []).append((code, pos2))
                     pos2 += 4
+
+            # Conflict resolution: near the charmap/texture boundary, the next
+            # section's own data (observed: literal "texture" string, dev file
+            # paths, small integer fields) can coincidentally look like valid
+            # (code, glyph_idx) pairs. When several different codes claim the
+            # SAME glyph_index, that's the tell - real charmap data doesn't do
+            # this. Keep only the candidate physically closest to the trusted
+            # core range [first_run_start, last_run_end] established by the
+            # long-run pass; discard the rest as noise.
+            def distance_from_core(offset):
+                if first_run_start is not None and first_run_start <= offset <= last_run_end:
+                    return 0
+                if first_run_start is None:
+                    return 0
+                return min(abs(offset - first_run_start), abs(offset - last_run_end))
+
+            for idx, entries in sparse_by_glyph.items():
+                if len(entries) == 1:
+                    code, off = entries[0]
+                else:
+                    code, off = min(entries, key=lambda e: distance_from_core(e[1]))
+                charmap[code] = idx
+                charmap_offsets[code] = off
 
         if not charmap:
             # Fallback: nothing auto-detected (unexpected file layout) - use the
