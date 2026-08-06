@@ -391,9 +391,10 @@ class GlyphEditorApp:
         # single-byte values. CONFIRMED IN-GAME: hi byte = Glyph Height, lo byte =
         # Glyph Width - changing either one visibly stretches/squashes the glyph on
         # screen along that axis (not just the atlas rectangle size).
+        # Displayed with -1 offset for user convenience.
         f2_hi, f2_lo = g.field2 >> 8, g.field2 & 0xFF
-        self.prop_vars["field2_hi"].set(str(f2_hi))
-        self.prop_vars["field2_lo"].set(str(f2_lo))
+        self.prop_vars["field2_hi"].set(str(f2_hi - 1))
+        self.prop_vars["field2_lo"].set(str(f2_lo - 1))
         # byte14 CONFIRMED IN-GAME to be the real Advance Width - it determines
         # where the NEXT character starts, unlike the 'Unknown' hi/lo field above
         # which showed no visible effect when changed in isolation.
@@ -441,12 +442,13 @@ class GlyphEditorApp:
             # field2_hi and field2_lo are treated as two INDEPENDENT single bytes
             # (not as one combined 16-bit number - see select_glyph for why), so each
             # is validated and packed separately.
-            f2_hi = int(self.prop_vars["field2_hi"].get())
-            f2_lo = int(self.prop_vars["field2_lo"].get())
+            # User enters values with -1 offset, so we add 1 back when storing.
+            f2_hi = int(self.prop_vars["field2_hi"].get()) + 1
+            f2_lo = int(self.prop_vars["field2_lo"].get()) + 1
             if not (0 <= f2_hi <= 255):
-                raise ValueError("Glyph Height must be an integer between 0 and 255 (it's a single byte)")
+                raise ValueError("Glyph Height must be an integer between -1 and 254 (displayed with -1 offset)")
             if not (0 <= f2_lo <= 255):
-                raise ValueError("Glyph Width must be an integer between 0 and 255 (it's a single byte)")
+                raise ValueError("Glyph Width must be an integer between -1 and 254 (displayed with -1 offset)")
             g.field2 = (f2_hi << 8) | f2_lo
 
             byte14_val = int(self.prop_vars["byte14"].get())
