@@ -123,16 +123,14 @@ class GlyphEditorApp:
         prop_fields = [
             ("index", "Index"),
             ("char", "Char"),
-            ("unknown_hi", "Unknown hi (?)"),
-            ("unknown_lo", "Unknown lo (?)"),
             ("x0", "Start X"),
             ("y0", "Start Y"),
             ("x1", "End X"),
             ("y1", "End Y"),
-            ("field1_hi", "Y Bearing (-↑/+↓)"),
             ("field1_lo", "X Bearing (-←/+→)"),
-            ("field2_hi", "Glyph Height (↕)"),
+            ("field1_hi", "Y Bearing (-↑/+↓)"),
             ("field2_lo", "Glyph Width (↔)"),
+            ("field2_hi", "Glyph Height (↕)"),
             ("byte14", "Advance Width"),
         ]
         for key, label in prop_fields:
@@ -173,27 +171,20 @@ class GlyphEditorApp:
             "X/Y (in texture pixels) and click\n"
             "'Apply Changes'.\n\n"
             "VERIFIED IN-GAME (via XEMU):\n"
-            "- Glyph Height/Width (f2_hi/f2_lo):\n"
+            "- Glyph Width/Height (f2_lo/f2_hi):\n"
             "  physical glyph size. Changing these\n"
             "  visibly stretches/squashes the glyph\n"
-            "  on screen along Y/X. Stored as TWO\n"
+            "  on screen along X/Y. Stored as TWO\n"
             "  independent bytes, not one number.\n"
             "- Advance Width (byte14): horizontal\n"
             "  step after this character - where\n"
             "  the next one starts.\n"
-            "- Y/X Bearing (f1_hi/f1_lo): offset of\n"
-            "  the glyph from the baseline. Positive\n"
-            "  Y = lower, negative Y = higher.\n"
-            "  Negative X = left, positive X =\n"
-            "  right. Shown/entered as SIGNED bytes\n"
-            "  (-128..127).\n"
-            "- 'Unknown' (hi/lo): NO visible\n"
-            "  effect even at extreme test values\n"
-            "  (0 and 255), not just small changes.\n"
-            "  High byte always 0x00 - the 'two\n"
-            "  independent bytes' idea was tested\n"
-            "  and doesn't hold. Likely not read by\n"
-            "  the text renderer at all.\n\n"
+            "- X/Y Bearing (f1_lo/f1_hi): offset of\n"
+            "  the glyph from the baseline. Negative\n"
+            "  X = left, positive X = right.\n"
+            "  Positive Y = lower, negative Y =\n"
+            "  higher. Shown/entered as SIGNED bytes\n"
+            "  (-128..127).\n\n"
             "Y-axis pixel-conversion formula found\n"
             "empirically, not 100% verified by\n"
             "disassembly."
@@ -370,33 +361,24 @@ class GlyphEditorApp:
 
         self.prop_vars["index"].set(str(g.index))
         self.prop_vars["char"].set(g.char)
-        # This field (internal attribute name: unknown_field, kept for backward
-        # compatibility) is stored as one uint16 in the file. CONFIRMED IN-GAME:
-        # no visible effect even at extreme test values (0 and 255). High byte is
-        # always 0x00 across the whole glyph table - shown here split into hi/lo
-        # bytes for consistency with field1/field2, so any future finding about
-        # either byte specifically is easy to test in isolation.
-        unk_hi, unk_lo = g.unknown_field >> 8, g.unknown_field & 0xFF
-        self.prop_vars["unknown_hi"].set(str(unk_hi))
-        self.prop_vars["unknown_lo"].set(str(unk_lo))
         # field1 is stored as one uint16 in the file, but behaves as two independent
-        # bytes. CONFIRMED IN-GAME: hi byte = Y Bearing (vertical offset from the
-        # baseline - positive moves the glyph down, negative moves it up), lo byte =
-        # X Bearing (horizontal offset from the baseline - negative shifts left,
-        # positive shifts right). Displayed/edited here as SIGNED int8 (-128..127),
+        # bytes. CONFIRMED IN-GAME: lo byte = X Bearing (horizontal offset from the
+        # baseline - negative shifts left, positive shifts right), hi byte = Y Bearing
+        # (vertical offset from the baseline - positive moves the glyph down, negative
+        # moves it up). Displayed/edited here as SIGNED int8 (-128..127),
         # since the raw unsigned readings (e.g. 254/255) only made sense once
         # reinterpreted as small negative numbers (-2/-1).
         f1_hi, f1_lo = g.field1 >> 8, g.field1 & 0xFF
-        self.prop_vars["field1_hi"].set(str(self._byte_to_signed(f1_hi)))
         self.prop_vars["field1_lo"].set(str(self._byte_to_signed(f1_lo)))
+        self.prop_vars["field1_hi"].set(str(self._byte_to_signed(f1_hi)))
         # field2 is stored as one uint16 in the file, but behaves as two INDEPENDENT
-        # single-byte values. CONFIRMED IN-GAME: hi byte = Glyph Height, lo byte =
-        # Glyph Width - changing either one visibly stretches/squashes the glyph on
+        # single-byte values. CONFIRMED IN-GAME: lo byte = Glyph Width, hi byte =
+        # Glyph Height - changing either one visibly stretches/squashes the glyph on
         # screen along that axis (not just the atlas rectangle size).
         # Displayed with -1 offset for user convenience.
         f2_hi, f2_lo = g.field2 >> 8, g.field2 & 0xFF
-        self.prop_vars["field2_hi"].set(str(f2_hi - 1))
         self.prop_vars["field2_lo"].set(str(f2_lo - 1))
+        self.prop_vars["field2_hi"].set(str(f2_hi - 1))
         # byte14 CONFIRMED IN-GAME to be the real Advance Width - it determines
         # where the NEXT character starts, unlike the 'Unknown' hi/lo field above
         # which showed no visible effect when changed in isolation.
@@ -425,32 +407,24 @@ class GlyphEditorApp:
             return
         g = self.font.glyphs[self.selected_index].clone()
         try:
-            unk_hi = int(self.prop_vars["unknown_hi"].get())
-            unk_lo = int(self.prop_vars["unknown_lo"].get())
-            if not (0 <= unk_hi <= 255):
-                raise ValueError("Unknown hi must be an integer between 0 and 255 (it's a single byte)")
-            if not (0 <= unk_lo <= 255):
-                raise ValueError("Unknown lo must be an integer between 0 and 255 (it's a single byte)")
-            g.unknown_field = (unk_hi << 8) | unk_lo
-
-            # field1_hi and field1_lo are treated as two INDEPENDENT single bytes,
+            # field1_lo and field1_hi are treated as two INDEPENDENT single bytes,
             # entered/displayed as SIGNED int8 (-128..127) - see select_glyph for why.
-            f1_hi_signed = int(self.prop_vars["field1_hi"].get())
             f1_lo_signed = int(self.prop_vars["field1_lo"].get())
-            f1_hi = self._signed_to_byte(f1_hi_signed)
+            f1_hi_signed = int(self.prop_vars["field1_hi"].get())
             f1_lo = self._signed_to_byte(f1_lo_signed)
+            f1_hi = self._signed_to_byte(f1_hi_signed)
             g.field1 = (f1_hi << 8) | f1_lo
 
-            # field2_hi and field2_lo are treated as two INDEPENDENT single bytes
+            # field2_lo and field2_hi are treated as two INDEPENDENT single bytes
             # (not as one combined 16-bit number - see select_glyph for why), so each
             # is validated and packed separately.
             # User enters values with -1 offset, so we add 1 back when storing.
-            f2_hi = int(self.prop_vars["field2_hi"].get()) + 1
             f2_lo = int(self.prop_vars["field2_lo"].get()) + 1
-            if not (0 <= f2_hi <= 255):
-                raise ValueError("Glyph Height must be an integer between -1 and 254 (displayed with -1 offset)")
+            f2_hi = int(self.prop_vars["field2_hi"].get()) + 1
             if not (0 <= f2_lo <= 255):
                 raise ValueError("Glyph Width must be an integer between -1 and 254 (displayed with -1 offset)")
+            if not (0 <= f2_hi <= 255):
+                raise ValueError("Glyph Height must be an integer between -1 and 254 (displayed with -1 offset)")
             g.field2 = (f2_hi << 8) | f2_lo
 
             byte14_val = int(self.prop_vars["byte14"].get())
