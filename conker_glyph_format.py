@@ -48,6 +48,45 @@ _LEGACY_CHARMAP_BLOCKS_CONKERFONT = [
                                           # by the automatic detector.
 ]
 
+# Profile detection signatures: byte patterns at specific offsets
+_PROFILE_SIGNATURES = {
+    "ConkerFont": {
+        "offset": 0x33A2,
+        "bytes": b"ConkerFont",
+    },
+    "ConkerFontJapanese": {
+        "offset": 0x7922,
+        "bytes": b"ConkerFontJapanese",
+    },
+    "FrontendTitle": {
+        "offset": 0x2E42,
+        "bytes": b"FrontendTitle",
+    },
+    "FrontendTitleJapanese": {
+        "offset": 0x3FA2,
+        "bytes": b"FrontendTitleJapanese",
+    },
+}
+
+
+def detect_profile(data):
+    """Auto-detect font profile from byte signatures in the file.
+    
+    Args:
+        data: bytearray or bytes of the file contents
+        
+    Returns:
+        str: Profile name if detected, None if no match found
+    """
+    for profile_name, sig in _PROFILE_SIGNATURES.items():
+        offset = sig["offset"]
+        expected_bytes = sig["bytes"]
+        if offset + len(expected_bytes) <= len(data):
+            actual_bytes = data[offset:offset + len(expected_bytes)]
+            if actual_bytes == expected_bytes:
+                return profile_name
+    return None
+
 
 class Glyph:
     """A single entry in the glyph table, containing raw and unpacked fields.
@@ -155,12 +194,19 @@ class ConkerFont:
     """Loads default.bin fully into memory, provides access to glyphs, and allows
     writing changes back (in-place patch, leaving the rest of the file completely intact)."""
 
-    def __init__(self, path, profile_name="ConkerFont"):
+    def __init__(self, path, profile_name=None):
         self.path = path
-        self.profile_name = profile_name
-        self.profile = FONT_PROFILES[profile_name]
         with open(path, "rb") as f:
             self.data = bytearray(f.read())
+        
+        # Auto-detect profile if not specified
+        if profile_name is None:
+            profile_name = detect_profile(self.data)
+            if profile_name is None:
+                profile_name = "ConkerFont"  # Fallback to default
+        
+        self.profile_name = profile_name
+        self.profile = FONT_PROFILES[profile_name]
 
         if self.data[0:4] != b"CAFF":
             raise ValueError(f"{path}: does not look like a CAFF container (magic={self.data[0:4]!r})")
