@@ -212,7 +212,9 @@ class GlyphEditorApp:
         if not path:
             return
         try:
-            self.font = ConkerFont(path, profile_name=self.profile_var.get())
+            self.font = ConkerFont(path, profile_name=None)  # Auto-detect profile
+            # Update profile dropdown to match detected profile
+            self.profile_var.set(self.font.profile_name)
         except Exception as e:
             messagebox.showerror("Loading Error", str(e))
             return
@@ -243,7 +245,7 @@ class GlyphEditorApp:
         self._redraw_canvas()
         self.status_var.set(
             f"Loaded {os.path.basename(path)}: {self.font.glyph_count} glyphs, "
-            f"profile {self.profile_var.get()}"
+            f"profile {self.profile_var.get()} (auto-detected)"
         )
 
     def open_texture(self):
