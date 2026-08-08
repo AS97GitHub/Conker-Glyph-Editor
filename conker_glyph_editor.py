@@ -71,7 +71,7 @@ class GlyphEditorApp:
         main.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
         # Left panel: glyph list
-        left = ttk.Frame(main, width=235)
+        left = ttk.Frame(main, width=225)
         left.pack(side=tk.LEFT, fill=tk.Y)
         left.pack_propagate(False)
 
@@ -338,9 +338,9 @@ class GlyphEditorApp:
             return
         for g in self.font.glyphs:
             char_disp = g.char if g.char.strip() else "·"
-            special = " [special]" if g.is_special else ""
+            special = " [spec]" if g.is_special else ""
             self.glyph_listbox.insert(
-                tk.END, f"{g.index:3d}  {char_disp!r:>5s}  adv={g.byte14:3d}{special}"
+                tk.END, f"{g.index:3d}  char={char_disp}  adv={g.byte14:3d}{special}"
             )
 
     def on_listbox_select(self, event):
@@ -369,7 +369,7 @@ class GlyphEditorApp:
         g = self.font.glyphs[index]
 
         self.prop_vars["index"].set(str(g.index))
-        self.prop_vars["char"].set(repr(g.char))
+        self.prop_vars["char"].set(g.char)
         # This field (internal attribute name: unknown_field, kept for backward
         # compatibility) is stored as one uint16 in the file. CONFIRMED IN-GAME:
         # no visible effect even at extreme test values (0 and 255). High byte is
