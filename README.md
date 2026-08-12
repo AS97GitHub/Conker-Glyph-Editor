@@ -18,6 +18,12 @@
 
 All files must be located in the same folder.
 
+## Screenshot
+
+<p align="center">
+  <img src="images/screenshot.png" width="792">
+</p>
+
 ## Installation (Windows)
 
 1. Make sure Python 3.8 or later is installed (tkinter is included with the standard Windows Python distribution, so no separate installation is required).
