@@ -177,10 +177,10 @@ class Glyph:
 
     def set_from_pixels(self, x0, y0, x1, y1, x_div, y_div, x_off, y_off):
         """Inverse conversion: from pixel coordinates back to raw values."""
-        self.x0_raw = round((x0 - x_off) * x_div)
-        self.x1_raw = round((x1 - x_off) * x_div)
-        self.y0_raw = round((y0 - y_off) * y_div)
-        self.y1_raw = round((y1 - y_off) * y_div)
+        self.x0_raw = int((x0 - x_off) * x_div)
+        self.x1_raw = int((x1 - x_off) * x_div)
+        self.y0_raw = int((y0 - y_off) * y_div)
+        self.y1_raw = int((y1 - y_off) * y_div)
         self.is_special = False
 
     def clone(self):
