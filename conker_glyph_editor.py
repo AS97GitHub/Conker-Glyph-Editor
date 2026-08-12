@@ -22,6 +22,19 @@ class GlyphEditorApp:
         self.root = root
         self.root.title("Conker Glyph Editor")
         self.root.geometry("1200x760")
+        
+        # Set window icon
+        # Handle both development and PyInstaller-compiled environments
+        if getattr(sys, 'frozen', False):
+            # Running in a PyInstaller bundle
+            base_path = sys._MEIPASS
+        else:
+            # Running in normal Python environment
+            base_path = os.path.dirname(__file__)
+        
+        icon_path = os.path.join(base_path, "resources", "icon.ico")
+        if os.path.exists(icon_path):
+            self.root.iconbitmap(icon_path)
 
         self.font = None          # ConkerFont instance
         self.tex_image = None     # PIL.Image of the original texture
@@ -566,11 +579,11 @@ class GlyphEditorApp:
         elif self.drag_mode == "x1y1":
             x1, y1 = x1 + dx, y1 + dy
 
-        # Round coordinates to integers to avoid decimal values
-        x0_rounded = round(min(x0, x1))
-        y0_rounded = round(min(y0, y1))
-        x1_rounded = round(max(x0, x1))
-        y1_rounded = round(max(y0, y1))
+        # Truncate coordinates to integers to avoid decimal values
+        x0_rounded = int(min(x0, x1))
+        y0_rounded = int(min(y0, y1))
+        x1_rounded = int(max(x0, x1))
+        y1_rounded = int(max(y0, y1))
 
         g = self.font.glyphs[self.selected_index].clone()
         self.font.set_pixels(g, x0_rounded, y0_rounded, x1_rounded, y1_rounded)
