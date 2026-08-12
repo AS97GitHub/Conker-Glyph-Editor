@@ -33,7 +33,7 @@ All files must be located in the same folder.
 
 ## Screenshot
 
-<p align="center">
+<p align>
   <img src="images/screenshot.png" width="792">
 </p>
 
