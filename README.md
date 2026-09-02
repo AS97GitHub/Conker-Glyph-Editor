@@ -41,7 +41,7 @@ All files must be located in the same folder.
 
 ### Option 1 — Download the executable
 
-Download the latest `.exe` version from the `Releases` page.
+Download the latest `.exe` version from the [Releases](https://github.com/AS97GitHub/Conker-Glyph-Editor/releases) page.
 
 > No `python` installation or additional dependencies are required.
 
