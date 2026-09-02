@@ -39,6 +39,14 @@ All files must be located in the same folder.
 
 ## Installation (Windows)
 
+### Option 1 — Download the executable
+
+Download the latest `.exe` version from the `Releases` page.
+
+> No `python` installation or additional dependencies are required.
+
+### Option 2 — Run from source
+
 1. Make sure Python 3.8 or later is installed (tkinter is included with the standard Windows Python distribution, so no separate installation is required).
 2. Install Pillow:
    ```
