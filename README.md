@@ -82,7 +82,7 @@ python conker_glyph_editor.py path\to\default.bin path\to\texture.png
    - The `advance` field specifies the glyph advance width and can also be edited manually.
 6. **Saving:**
    - **"Save As..."** — save to a new file (recommended to preserve the original).
-   - **"Save (Overwrite)"** — overwrite the currently opened file (confirmation required).
+   - **"Save (overwrite)"** — overwrite the currently opened file (confirmation required).
 
 The editor modifies **only the bytes of the selected glyph record** (18 bytes per glyph). The rest of the file (texture, other glyphs, headers, etc.) remains completely unchanged at the byte level.
 
