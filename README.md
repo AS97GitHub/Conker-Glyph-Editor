@@ -73,7 +73,7 @@ python conker_glyph_editor.py path\to\default.bin path\to\texture.png
 
 1. **"Open .bin..."** — select a font file (for example, `default.bin` from `ConkerFont`).
 2. **"Open Texture..."** — select the extracted texture for the same font (BMP or PNG, for example one extracted with CrystalTile2, ImageHeat, or your own export).
-3. Select the correct **profile** from the drop-down list (`ConkerFont` / `ConkerFontJapanese` / `FrontendTitle` / `FrontendTitleJapanese`). Each profile is a fixed preset with the coordinate calibration coefficients already determined for that font (see "Important Note" below) — there is no interactive calibration step, just pick the profile matching the font you opened.
+3. Select the correct **profile** from the drop-down list (`ConkerFont` / `ConkerFontJapanese` / `FrontendTitle` / `FrontendTitleJapanese`). Each profile is a fixed preset with the coordinate calibration coefficients already determined for that font (see **"Important Note"** below) — there is no interactive calibration step, just pick the profile matching the font you opened.
 4. The glyph list on the left lets you select a glyph. The selected glyph is highlighted on the texture with a light blue rectangle and corner handles.
 5. **Editing:**
    - Drag a corner handle to resize the glyph rectangle (`x0/y0/x1/y1`).
@@ -95,19 +95,12 @@ pixel = raw / DIV + OFFSET
 DIV   = 16384 / actual_used_texture_size_in_pixels
 ```
 
-where 16384 = 2¹⁴ — coordinates are stored in a fixed 14-bit normalized grid. The
-"actual used size" is the real width/height of the texture's content (for example what
-ImageHeat produces after trimming empty padding: 256×240 for ConkerFont, 512×203 for
-FrontendTitle), not the power-of-two file dimensions of the texture.
+where 16384 = 2¹⁴ — coordinates are stored in a fixed 14-bit normalized grid.
 
-This formula has been validated via IoU against the real textures of the known fonts
-(~0.85–0.87 average overlap between predicted and actual glyph outlines) and gives a
-single, structurally consistent logic for both X and Y, rather than two independently
-fitted numbers. However: it has **not** been fully verified through disassembly/debugging
-of the game's own code — a discrepancy with what the actual engine uses is still
-theoretically possible, especially for texture sizes not yet covered by the tested
-samples.
+The **"actual used size"** is the real width/height of the texture's content (for example what ImageHeat produces after trimming empty padding: 256×240 for `ConkerFont`, 512×203 for `FrontendTitle`), not the power-of-two file dimensions of the texture.
 
-If possible, verify your changes in the actual game (for example, using XEMU). It is
-recommended to make small edits and test them before relying on the editor for
-large-scale modifications.
+This formula has been validated via **IoU** against the real textures of the known fonts (~0.85–0.87 average overlap between predicted and actual glyph outlines) and gives a single, structurally consistent logic for both X and Y, rather than two independently fitted numbers.
+
+However: it has **not been fully verified through disassembly/debugging of the game's own code** — a discrepancy with what the actual engine uses is still theoretically possible, especially for texture sizes not yet covered by the tested samples.
+
+If possible, verify your changes in the actual game (for example, using XEMU). It is recommended to make small edits and test them before relying on the editor for large-scale modifications.
