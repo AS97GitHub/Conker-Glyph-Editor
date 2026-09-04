@@ -138,7 +138,7 @@ class Glyph:
                       |                  | starts. This is what `unknown_field` (above)
                       |                  | was originally assumed to do. Unsigned.
     --------------------------------------------------------------------------------
-    byte15            | -                | Always observed as 0x00; likely padding.
+    byte15            | -                | Always observed as 0x00; purpose unknown.
 
     x0_raw..y1_raw use the FONT_PROFILES pixel-conversion formula (raw / DIV +
     OFFSET). field1/field2 are stored as one uint16 each in the file but behave
