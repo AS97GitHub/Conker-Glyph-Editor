@@ -166,13 +166,23 @@ class Glyph:
         self.char = ""  # Populated externally from charmap, can be empty
 
     def to_pixels(self, x_div, y_div, x_off, y_off):
-        """Returns (x0, y0, x1, y1) in texture pixels, or None if is_special."""
+        """Returns (x0, y0, x1, y1) in texture pixels, or None if is_special.
+
+        Rounded to the nearest whole pixel: raw values in the file are always
+        integers, and x_off/y_off are non-integer per profile (e.g. -0.5), so
+        raw/DIV + OFFSET lands a fraction of a pixel off an integer purely from
+        that arithmetic (observed max deviation ~0.01-0.05px across all four
+        profiles) - not a meaningful sub-pixel value. Rounding here keeps the
+        displayed/drawn coordinate consistent with what set_from_pixels() will
+        write back, so re-saving an untouched glyph reproduces the original
+        raw value exactly.
+        """
         if self.is_special:
             return None
-        x0 = self.x0_raw / x_div + x_off
-        x1 = self.x1_raw / x_div + x_off
-        y0 = self.y0_raw / y_div + y_off
-        y1 = self.y1_raw / y_div + y_off
+        x0 = round(self.x0_raw / x_div + x_off)
+        x1 = round(self.x1_raw / x_div + x_off)
+        y0 = round(self.y0_raw / y_div + y_off)
+        y1 = round(self.y1_raw / y_div + y_off)
         return (x0, y0, x1, y1)
 
     def set_from_pixels(self, x0, y0, x1, y1, x_div, y_div, x_off, y_off):
