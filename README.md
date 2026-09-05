@@ -34,7 +34,7 @@ All files must be located in the same folder.
 ## Screenshot
 
 <p align>
-  <img src="images/screenshot.png" width="792">
+  <img src="images/screenshot.png">
 </p>
 
 ## Installation (Windows)
