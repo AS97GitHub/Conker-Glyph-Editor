@@ -34,7 +34,7 @@
 ## Скриншот
 
 <p align>
-  <img src="images/screenshot.png" width="792">
+  <img src="images/screenshot.png">
 </p>
 
 ## Установка (Windows)
