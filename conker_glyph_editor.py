@@ -36,13 +36,13 @@ class GlyphEditorApp:
         if os.path.exists(icon_path):
             self.root.iconbitmap(icon_path)
 
-        self.font = None          # ConkerFont instance
-        self.tex_image = None     # PIL.Image of the original texture
-        self.tex_photo = None     # ImageTk.PhotoImage for display
+        self.font = None               # ConkerFont instance
+        self.tex_image = None          # PIL.Image of the original texture
+        self.tex_photo = None          # ImageTk.PhotoImage for display
         self.zoom = DEFAULT_ZOOM
         self.selected_index = None
         self.current_file_path = None  # Track current file path
-        self.drag_mode = None     # None | "move" | "x0y0" | "x1y0" | "x0y1" | "x1y1"
+        self.drag_mode = None          # None | "move" | "x0y0" | "x1y0" | "x0y1" | "x1y1"
         self.drag_start = None
         self.drag_orig_rect = None
         self.unsaved_changes = False
@@ -184,23 +184,21 @@ class GlyphEditorApp:
             "X/Y (in texture pixels) and click\n"
             "'Apply Changes'.\n\n"
             "VERIFIED IN-GAME (via XEMU):\n"
-            "- Glyph Width/Height (f2_lo/f2_hi):\n"
-            "  physical glyph size. Changing these\n"
-            "  visibly stretches/squashes the glyph\n"
-            "  on screen along X/Y. Stored as TWO\n"
-            "  independent bytes, not one number.\n"
-            "- Advance Width (byte14): horizontal\n"
-            "  step after this character - where\n"
-            "  the next one starts.\n"
-            "- X/Y Bearing (f1_lo/f1_hi): offset of\n"
-            "  the glyph from the baseline. Negative\n"
-            "  X = left, positive X = right.\n"
-            "  Positive Y = lower, negative Y =\n"
-            "  higher. Shown/entered as SIGNED bytes\n"
-            "  (-128..127).\n\n"
-            "Y-axis pixel-conversion formula found\n"
-            "empirically, not 100% verified by\n"
-            "disassembly."
+            "- Glyph Width/Height: physical glyph\n"
+            "  size. Changing these visibly stretches/\n"
+            "  squashes the glyph on screen along\n"
+            "  X/Y. Stored as TWO independent\n"
+            "  bytes, not one number.\n"
+            "- Advance Width: horizontal step after\n"
+            "  this character - where the next one\n"
+            "  starts.\n"
+            "- X/Y Bearing: offset of the glyph from\n"
+            "  the baseline. Negative X = left,\n"
+            "  positive X = right. Positive Y = lower,\n"
+            "  negative Y = higher. Shown/entered\n"
+            "  as SIGNED bytes (-128..127).\n\n"
+            "Pixel-conversion formula (both X and Y)\n"
+            "found empirically."
         )
         help_text.config(state=tk.NORMAL)
         help_text.insert(tk.END, help_content)
