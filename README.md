@@ -90,7 +90,7 @@ The editor modifies **only the bytes of the selected glyph record**: each record
 
 ## Character mapping
 
-The editor automatically scans the file for its character-to-glyph mapping table (no hardcoded offsets), so it works across fonts with different sizes and layouts, including the CJK variants (`ConkerFontJapanese`, `FrontendTitleJapanese`). This is what populates the character shown next to each glyph in the list. This mapping is read-only in the GUI; the underlying library (`conker_glyph_format.py`) additionally exposes `remap_charmap_code()` and `find_codes_in_range()` for programmatically reassigning which character code triggers a given glyph, if you need that for a script-based workflow.
+The editor automatically scans the file for its character-to-glyph mapping table (no hardcoded offsets), so it works across fonts with different sizes and layouts, including the Japanese variants (`ConkerFontJapanese`, `FrontendTitleJapanese`). This is what populates the character shown next to each glyph in the list. This mapping is read-only in the GUI.
 
 ## Important Note
 
