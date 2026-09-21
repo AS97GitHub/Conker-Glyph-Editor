@@ -148,6 +148,6 @@ where 16384 = 2¹⁴ — coordinates are stored in a fixed 14-bit normalized gri
 
 These are the actual texture dimensions, rather than power-of-two dimensions used for the texture file.
 
-However: the coordinate formula itself has **not been fully verified through disassembly/debugging of the game's own code** — a discrepancy with what the actual engine uses is still theoretically possible, especially for texture sizes not yet covered by the tested samples. This caveat applies specifically to the texture-rectangle (`x0/y0/x1/y1`) formula; the other editable fields (X/Y Bearing, Glyph Width/Height, Advance Width) are separately **confirmed in-game via XEMU**, by editing one field at a time and comparing screenshots against an unmodified baseline.
+However, the coordinate formula itself has **not been fully verified through disassembly/debugging of the game's own code** — a **discrepancy with how the coordinates are actually used by the game engine** is still theoretically possible. This caveat applies specifically to the texture-rectangle (`x0/y0/x1/y1`) formula; the other editable fields (X/Y Bearing, Glyph Width/Height, Advance Width) are separately **confirmed in-game via XEMU**, by editing one field at a time and comparing screenshots against an unmodified baseline.
 
 If possible, verify your changes in the actual game (for example, using XEMU). It is recommended to make small edits and test them before relying on the editor for large-scale modifications.
