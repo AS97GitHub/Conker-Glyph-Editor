@@ -92,6 +92,41 @@ The editor modifies **only the bytes of the selected glyph record**: each record
 
 The editor automatically scans the file for its character-to-glyph mapping table (no hardcoded offsets), so it works across fonts with different sizes and layouts, including the Japanese variants (`ConkerFontJapanese`, `FrontendTitleJapanese`). This is what populates the character shown next to each glyph in the list. This mapping is read-only in the GUI.
 
+### Extracting the texture with CrystalTile2
+
+To open the font texture in **CrystalTile2**:
+
+1. Open the font file in CrystalTile2.
+2. Use the following settings:
+
+**Default setting**
+
+* **Offset:**
+
+  * `3458` — `ConkerFont`
+  * `79F8` — `ConkerFontJapanese`
+  * `2EFC` — `FrontendTitle`
+  * `407C` — `FrontendTitleJapanese`
+
+**Tile property**
+
+* **Width / Height:**
+
+  * `256×240` — `ConkerFont`
+  * `1024×772` — `ConkerFontJapanese`
+  * `512×203` — `FrontendTitle`
+  * `1024×335` — `FrontendTitleJapanese`
+* **Tile form:** `GBA 8bpp`
+
+**Palette**
+
+* **Palette:** `Gray DIVISION`
+
+3. After applying these settings, export the texture as a **BMP** or **PNG** file.
+4. Open the exported texture in **Conker Glyph Editor** using **"Open Texture..."**.
+
+> **Tip:** For editing the texture, it is recommended to copy it directly from the CrystalTile2 preview and paste it into Photoshop. This preserves the texture's appearance as displayed in CrystalTile2.
+
 ## Important Note
 
 The coordinate decoding formula for each font is:
