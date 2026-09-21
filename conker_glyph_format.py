@@ -17,10 +17,10 @@ FONT_PROFILES = {
         "X_DIV": 16384 / 256, "Y_DIV": 16384 / 240, "X_OFFSET": -0.5, "Y_OFFSET": -0.5,
     },
     "ConkerFontJapanese": {
-        "X_DIV": 16384 / 1024, "Y_DIV": 16384 / 772, "X_OFFSET": -1.5, "Y_OFFSET": -0.5,
+        "X_DIV": 16384 / 1024, "Y_DIV": 16384 / 772, "X_OFFSET": -0.5, "Y_OFFSET": -0.5,
     },
     "FrontendTitle": {
-        "X_DIV": 16384 / 512, "Y_DIV": 16384 / 203, "X_OFFSET": 0.5, "Y_OFFSET": -0.5,
+        "X_DIV": 16384 / 512, "Y_DIV": 16384 / 203, "X_OFFSET": -0.5, "Y_OFFSET": -0.5,
     },
     "FrontendTitleJapanese": {
         "X_DIV": 16384 / 1024, "Y_DIV": 16384 / 335, "X_OFFSET": -0.5, "Y_OFFSET": -0.5,
@@ -468,12 +468,6 @@ class ConkerFont:
 
     # ---------- High-level helper functions ----------
 
-    def get_glyph_by_char(self, ch):
-        idx = self.charmap.get(ord(ch))
-        if idx is None:
-            return None
-        return self.glyphs[idx]
-
     def to_pixels(self, glyph):
         p = self.profile
         return glyph.to_pixels(p["X_DIV"], p["Y_DIV"], p["X_OFFSET"], p["Y_OFFSET"])
@@ -481,54 +475,3 @@ class ConkerFont:
     def set_pixels(self, glyph, x0, y0, x1, y1):
         p = self.profile
         glyph.set_from_pixels(x0, y0, x1, y1, p["X_DIV"], p["Y_DIV"], p["X_OFFSET"], p["Y_OFFSET"])
-
-    # ---------- Charmap editing (repurposing existing glyph slots for new codes) ----------
-
-    def remap_charmap_code(self, old_code, new_code):
-        """Repurposes an EXISTING charmap entry: the glyph currently shown for
-        `old_code` (e.g. a Japanese Hiragana character) will instead be shown
-        for `new_code` (e.g. a Cyrillic letter). The glyph's geometry/texture
-        rectangle is untouched - only which character code triggers it changes.
-
-        This only works for codes that were found during charmap auto-detection
-        (i.e. `old_code in self.charmap`), since it patches the (code, glyph_idx)
-        pair in place at its known file offset rather than inserting new bytes -
-        the file size and every other structure stays exactly the same size.
-
-        Raises KeyError if old_code isn't a known charmap entry, or ValueError
-        if new_code is already in use (to avoid silently creating an ambiguous
-        charmap with two different glyphs claiming the same code - remap or
-        delete the existing entry for new_code first if that's really what you
-        want).
-        """
-        if old_code not in self.charmap:
-            raise KeyError(f"code {hex(old_code)} is not a known charmap entry")
-        if new_code in self.charmap:
-            raise ValueError(
-                f"code {hex(new_code)} is already mapped to glyph "
-                f"{self.charmap[new_code]} - remap or remove that entry first"
-            )
-
-        glyph_idx = self.charmap[old_code]
-        offset = self._charmap_offsets[old_code]
-
-        # Patch the 4 bytes in place: same glyph_idx, new code.
-        self.data[offset:offset + 2] = struct.pack("<H", new_code)
-
-        del self.charmap[old_code]
-        del self._charmap_offsets[old_code]
-        self.charmap[new_code] = glyph_idx
-        self._charmap_offsets[new_code] = offset
-
-        self._apply_charmap_to_glyphs()
-
-    def find_codes_in_range(self, first_code, last_code_inclusive):
-        """Returns a sorted list of (code, glyph_index) for every currently
-        mapped charmap entry whose code falls within [first_code, last_code].
-        Handy for finding e.g. all Hiragana/Katakana/Kanji entries to free up:
-            font.find_codes_in_range(0x3040, 0x9FFF)
-        """
-        return sorted(
-            (code, idx) for code, idx in self.charmap.items()
-            if first_code <= code <= last_code_inclusive
-        )
