@@ -141,10 +141,10 @@ DIV   = 16384 / actual_texture_size_in_pixels
 
 Под **"actual texture size"** подразумевается фактическая ширина/высота текстуры в пикселях:
 
-  * `3458` для `ConkerFont`
-  * `79F8` для `ConkerFontJapanese`
-  * `2EFC` для `FrontendTitle`
-  * `407C` для `FrontendTitleJapanese`
+  * `256×240` для `ConkerFont`
+  * `1024×772` для `ConkerFontJapanese`
+  * `512×203` для `FrontendTitle`
+  * `1024×335` для `FrontendTitleJapanese`
 
 Это именно фактические размеры текстуры, а не размеры файла текстуры, приведённые к степени двойки.
 
