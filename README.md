@@ -92,7 +92,7 @@ The editor modifies **only the bytes of the selected glyph record**: each record
 
 The editor automatically scans the file for its character-to-glyph mapping table (no hardcoded offsets), so it works across fonts with different sizes and layouts, including the Japanese variants (`ConkerFontJapanese`, `FrontendTitleJapanese`). This is what populates the character shown next to each glyph in the list. This mapping is read-only in the GUI.
 
-### Extracting the texture with CrystalTile2
+## Extracting the texture with CrystalTile2
 
 To open the font texture in **CrystalTile2**:
 
