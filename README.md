@@ -116,6 +116,7 @@ To open the font texture in **CrystalTile2**:
   * `1024×772` — `ConkerFontJapanese`
   * `512×203` — `FrontendTitle`
   * `1024×335` — `FrontendTitleJapanese`
+
 * **Tile form:** `GBA 8bpp`
 
 **Palette**
@@ -133,12 +134,19 @@ The coordinate decoding formula for each font is:
 
 ```
 pixel = raw / DIV + OFFSET
-DIV   = 16384 / actual_used_texture_size_in_pixels
+DIV   = 16384 / actual_texture_size_in_pixels
 ```
 
 where 16384 = 2¹⁴ — coordinates are stored in a fixed 14-bit normalized grid.
 
-The **"actual used size"** is the real width/height of the texture's content (for example what ImageHeat produces after trimming empty padding: 256×240 for `ConkerFont`, 512×203 for `FrontendTitle`), not the power-of-two file dimensions of the texture.
+**"actual texture size"** refers to the actual width/height of the texture in pixels:
+
+  * `256×240` for `ConkerFont`
+  * `1024×772` for `ConkerFontJapanese`
+  * `512×203` for `FrontendTitle`
+  * `1024×335` for `FrontendTitleJapanese`
+
+These are the actual texture dimensions, rather than power-of-two dimensions used for the texture file.
 
 However: the coordinate formula itself has **not been fully verified through disassembly/debugging of the game's own code** — a discrepancy with what the actual engine uses is still theoretically possible, especially for texture sizes not yet covered by the tested samples. This caveat applies specifically to the texture-rectangle (`x0/y0/x1/y1`) formula; the other editable fields (X/Y Bearing, Glyph Width/Height, Advance Width) are separately **confirmed in-game via XEMU**, by editing one field at a time and comparing screenshots against an unmodified baseline.
 
