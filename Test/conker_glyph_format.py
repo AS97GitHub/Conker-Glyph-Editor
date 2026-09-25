@@ -3,7 +3,6 @@ conker_glyph_format.py
 """
 
 import struct
-import copy
 
 GLYPH_TABLE_OFFSET = 0x506
 GLYPH_REC_SIZE = 18

@@ -4,7 +4,6 @@ conker_glyph_editor.py
 
 import os
 import sys
-import struct
 import re
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
@@ -629,22 +628,6 @@ class GlyphEditorApp:
             return
         g = self.font.glyphs[self.selected_index].clone()
         try:
-            # Check if glyph has multiple characters for validation
-            glyph_codes = [code for code, mapped_index in self.font.charmap.items()
-                           if mapped_index == self.selected_index]
-            
-            # If glyph has multiple characters, don't allow direct editing
-            if len(glyph_codes) > 1:
-                raise ValueError("Glyph has multiple characters. Use character management (add/remove/replace) instead.")
-            
-            # If glyph has no characters
-            if len(glyph_codes) == 0:
-                raise ValueError("Selected glyph has no character mapping. Use character management (add) to add a character.")
-            
-            # Only allow editing if there's exactly one character
-            # Character editing is now done through the character management interface
-            raise ValueError("Use character management (add/remove/replace) to modify characters.")
-
             # field1_lo and field1_hi are treated as two INDEPENDENT single bytes,
             # entered/displayed as SIGNED int8 (-128..127) - see select_glyph for why.
             f1_lo_signed = int(self.prop_vars["field1_lo"].get())
@@ -675,18 +658,11 @@ class GlyphEditorApp:
                 x1 = float(self.prop_vars["x1"].get())
                 y1 = float(self.prop_vars["y1"].get())
                 self.font.set_pixels(g, x0, y0, x1, y1)
-
-            if new_code != self.selected_code:
-                self.font.remap_glyph_character(
-                    g.index, self.selected_code, new_code
-                )
-                g.char = self.font.glyphs[g.index].char
         except ValueError as e:
             messagebox.showerror("Invalid Input", str(e))
             return
 
         self.font.write_glyph(g)
-        self.selected_code = new_code
         self.unsaved_changes = True
         self._refresh_glyph_list()
         self.select_glyph(self.selected_index, preferred_code=self.selected_code)
@@ -945,9 +921,13 @@ class GlyphEditorApp:
             self.select_glyph(best)
         self.drag_mode = None
 
-    def on_canvas_drag(self, event):
-        if self.font is None or self.selected_index is None or self.drag_mode is None:
-            return
+    def _compute_dragged_rect(self, event):
+        """Compute the new glyph rectangle for the in-progress drag operation.
+
+        Shared by on_canvas_drag (live preview) and on_canvas_release (final
+        commit) so the move/resize/clamp math only lives in one place.
+        Returns (x0, y0, x1, y1) as ints, normalized so x0<=x1 and y0<=y1.
+        """
         x, y = self._canvas_to_texpx(event)
         dx = x - self.drag_start[0]
         dy = y - self.drag_start[1]
@@ -997,6 +977,12 @@ class GlyphEditorApp:
         y0_rounded = int(min(y0, y1))
         x1_rounded = int(max(x0, x1))
         y1_rounded = int(max(y0, y1))
+        return x0_rounded, y0_rounded, x1_rounded, y1_rounded
+
+    def on_canvas_drag(self, event):
+        if self.font is None or self.selected_index is None or self.drag_mode is None:
+            return
+        x0_rounded, y0_rounded, x1_rounded, y1_rounded = self._compute_dragged_rect(event)
 
         # Update UI fields without saving to data during drag
         self.prop_vars["x0"].set(f"{x0_rounded}")
@@ -1009,55 +995,7 @@ class GlyphEditorApp:
 
     def on_canvas_release(self, event):
         if self.drag_mode:
-            # Save the final position to data
-            x, y = self._canvas_to_texpx(event)
-            dx = x - self.drag_start[0]
-            dy = y - self.drag_start[1]
-            x0, y0, x1, y1 = self.drag_orig_rect
-
-            # Store original dimensions for move mode
-            orig_width = x1 - x0
-            orig_height = y1 - y0
-
-            if self.drag_mode == "move":
-                x0, x1 = x0 + dx, x1 + dx
-                y0, y1 = y0 + dy, y1 + dy
-            elif self.drag_mode == "x0y0":
-                x0, y0 = x0 + dx, y0 + dy
-            elif self.drag_mode == "x1y0":
-                x1, y0 = x1 + dx, y0 + dy
-            elif self.drag_mode == "x0y1":
-                x0, y1 = x0 + dx, y1 + dy
-            elif self.drag_mode == "x1y1":
-                x1, y1 = x1 + dx, y1 + dy
-
-            # Clamp coordinates to texture bounds to prevent going off-screen
-            if self.tex_image:
-                tex_w, tex_h = self.tex_image.width, self.tex_image.height
-                # Ensure coordinates stay within texture bounds
-                x0 = max(0, min(x0, tex_w - 1))
-                x1 = max(0, min(x1, tex_w - 1))
-                y0 = max(0, min(y0, tex_h - 1))
-                y1 = max(0, min(y1, tex_h - 1))
-
-            # In move mode, preserve original dimensions after clamping
-            if self.drag_mode == "move":
-                # If x0 was clamped, adjust x1 to maintain width
-                if x0 != self.drag_orig_rect[0] + dx:
-                    x1 = x0 + orig_width
-                # If x1 was clamped, adjust x0 to maintain width
-                elif x1 != self.drag_orig_rect[2] + dx:
-                    x0 = x1 - orig_width
-                # Same for y coordinates
-                if y0 != self.drag_orig_rect[1] + dy:
-                    y1 = y0 + orig_height
-                elif y1 != self.drag_orig_rect[3] + dy:
-                    y0 = y1 - orig_height
-
-            x0_rounded = int(min(x0, x1))
-            y0_rounded = int(min(y0, y1))
-            x1_rounded = int(max(x0, x1))
-            y1_rounded = int(max(y0, y1))
+            x0_rounded, y0_rounded, x1_rounded, y1_rounded = self._compute_dragged_rect(event)
 
             g = self.font.glyphs[self.selected_index].clone()
             self.font.set_pixels(g, x0_rounded, y0_rounded, x1_rounded, y1_rounded)
