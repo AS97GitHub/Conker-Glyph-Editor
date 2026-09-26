@@ -133,6 +133,10 @@ class GlyphEditorApp:
         self._charmap_row_data = []
         # Maps glyph_index -> preferred row in charmap_listbox to highlight
         self._charmap_index_by_glyph = {}
+        # Maps (glyph_index, code) -> exact row, so selecting a specific
+        # character keeps that exact row highlighted instead of falling
+        # back to the glyph's generic preferred row
+        self._charmap_row_by_glyph_and_code = {}
         # Maps a row in self.glyph_listbox to (glyph_index, preferred_code_or_None)
         self._glyph_row_data = []
 
@@ -222,13 +226,13 @@ class GlyphEditorApp:
         )
         
         self.char_mgmt_var = tk.StringVar(value="")
-        self.char_mgmt_entry = ttk.Entry(char_mgmt_row, textvariable=self.char_mgmt_var, width=11)
+        self.char_mgmt_entry = ttk.Entry(char_mgmt_row, textvariable=self.char_mgmt_var, width=8)
         self.char_mgmt_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
         
         self.char_action_var = tk.StringVar(value="add")
         char_action_combo = ttk.Combobox(
             char_mgmt_row, textvariable=self.char_action_var,
-            values=["add", "remove", "replace"], state="readonly", width=7
+            values=["add", "remove", "replace", "clear_glyph"], state="readonly", width=10
         )
         char_action_combo.pack(side=tk.LEFT, padx=(4, 0))
         char_action_combo.bind("<<ComboboxSelected>>", self.on_char_action_changed)
@@ -269,7 +273,13 @@ class GlyphEditorApp:
             "in Old Char from the selected glyph.\n"
             "replace: reassigns the character\n"
             "chosen in Old Char to point to\n"
-            "New Char instead.\n\n"
+            "New Char instead.\n"
+            "clear_glyph: clears the whole\n"
+            "selected glyph. Clears every charmap\n"
+            "entry pointing to it (like an empty\n"
+            "slot) and zeroes the glyph's own\n"
+            "data. Asks for confirmation first;\n"
+            "cannot be undone once saved.\n\n"
             "VERIFIED IN-GAME (via XEMU):\n"
             "- Glyph Width/Height: physical glyph\n"
             "  size. Changing these visibly stretches/\n"
@@ -469,6 +479,7 @@ class GlyphEditorApp:
         self.charmap_listbox.delete(0, tk.END)
         self._charmap_row_data = []
         self._charmap_index_by_glyph = {}
+        self._charmap_row_by_glyph_and_code = {}
         if self.font is None:
             return
 
@@ -496,6 +507,7 @@ class GlyphEditorApp:
         for row, (glyph_index, code) in enumerate(self._charmap_row_data):
             if glyph_index is None:
                 continue
+            self._charmap_row_by_glyph_and_code[(glyph_index, code)] = row
             if glyph_index not in self._charmap_index_by_glyph:
                 self._charmap_index_by_glyph[glyph_index] = row
             g = self.font.glyphs[glyph_index] if glyph_index < len(self.font.glyphs) else None
@@ -618,7 +630,15 @@ class GlyphEditorApp:
 
     def _sync_charmap_selection(self, index):
         self.charmap_listbox.selection_clear(0, tk.END)
-        target_row = self._charmap_index_by_glyph.get(index)
+        target_row = None
+        # Prefer the row matching the character actually selected (e.g. the
+        # user clicked the glyph's second/third mapped character in the
+        # Charmap tab) over the glyph's generic "preferred" row, so selecting
+        # a specific code point doesn't visually snap back to the first one.
+        if self.selected_code is not None:
+            target_row = self._charmap_row_by_glyph_and_code.get((index, self.selected_code))
+        if target_row is None:
+            target_row = self._charmap_index_by_glyph.get(index)
         if target_row is not None:
             self.charmap_listbox.selection_set(target_row)
             self.charmap_listbox.see(target_row)
@@ -696,8 +716,10 @@ class GlyphEditorApp:
             self.old_char_var.set("")  # Clear when disabled
             self.old_char_combo['values'] = []
 
-        if action == "remove":
-            # 'remove' only needs the character picked in "Old Char"
+        if action in ("remove", "clear_glyph"):
+            # Neither 'remove' (picks the code via Old Char) nor
+            # 'clear_glyph' (wipes the whole glyph, no code needed) uses
+            # the New Char field.
             self.char_mgmt_var.set("")
             self.char_mgmt_entry.config(state="disabled")
         else:
@@ -789,6 +811,34 @@ class GlyphEditorApp:
                     "(changes not saved to disk)"
                 )
                 
+            elif action == "clear_glyph":
+                glyph_index = self.selected_index
+                glyph_codes = sorted(c for c, idx in self.font.charmap.items() if idx == glyph_index)
+                chars_display = ", ".join(
+                    chr(c) if c >= 0x20 else f"U+{c:04X}" for c in glyph_codes
+                ) if glyph_codes else "(no character mapped)"
+
+                confirmed = messagebox.askyesno(
+                    "Clear Glyph",
+                    f"Clear glyph #{glyph_index} ({chars_display})?\n\n"
+                    "This clears every charmap entry pointing to it (same as "
+                    "an empty FFFF FFFF slot) and zeroes out all of the "
+                    "glyph's own data (metrics and rectangle). This cannot "
+                    "be undone once saved.",
+                    icon="warning"
+                )
+                if not confirmed:
+                    return
+
+                self.font.clear_glyph(glyph_index)
+                messagebox.showinfo(
+                    "Glyph Cleared",
+                    f"Glyph #{glyph_index} successfully cleared."
+                )
+                self.status_var.set(
+                    f"Glyph #{glyph_index} cleared (changes not saved to disk)"
+                )
+
         except ValueError as e:
             messagebox.showerror("Invalid Character", str(e))
             return
@@ -798,7 +848,7 @@ class GlyphEditorApp:
         self._refresh_glyph_list()
         
         # Update selected_code based on action
-        if action == "remove":
+        if action in ("remove", "clear_glyph"):
             glyph_codes = [c for c, idx in self.font.charmap.items() if idx == self.selected_index]
             if self.selected_code not in glyph_codes:
                 self.selected_code = glyph_codes[0] if glyph_codes else None
@@ -949,14 +999,19 @@ class GlyphEditorApp:
         elif self.drag_mode == "x1y1":
             x1, y1 = x1 + dx, y1 + dy
 
-        # Clamp coordinates to texture bounds to prevent going off-screen
+        # Clamp coordinates to texture bounds. The right/bottom edge is
+        # allowed to hang 1px past the texture (per user request): raw
+        # values there just get slightly larger, no format conflict. The
+        # left/top edge stays hard-clamped at 0: going negative would wrap
+        # around as a huge uint16 raw value on save, landing in the same
+        # range the format already reserves for is_special (no-rectangle)
+        # glyphs and silently turning the glyph into a blank one.
         if self.tex_image:
             tex_w, tex_h = self.tex_image.width, self.tex_image.height
-            # Ensure coordinates stay within texture bounds
-            x0 = max(0, min(x0, tex_w - 1))
-            x1 = max(0, min(x1, tex_w - 1))
-            y0 = max(0, min(y0, tex_h - 1))
-            y1 = max(0, min(y1, tex_h - 1))
+            x0 = max(0, min(x0, tex_w))
+            x1 = max(0, min(x1, tex_w))
+            y0 = max(0, min(y0, tex_h))
+            y1 = max(0, min(y1, tex_h))
 
         # In move mode, preserve original dimensions after clamping
         if self.drag_mode == "move":
@@ -1026,8 +1081,9 @@ def main():
     # Open immediately if paths are passed via CLI arguments
     if len(sys.argv) >= 2:
         bin_path = sys.argv[1]
-        if os.path.exists(bin_path):
-            app.font = ConkerFont(bin_path, profile_name=app.profile_var.get())
+        if os.path.exists(bin_path):            
+            app.font = ConkerFont(bin_path, profile_name=None)
+            app.profile_var.set(app.font.profile_name)
             app._refresh_glyph_list()
     if len(sys.argv) >= 3:
         tex_path = sys.argv[2]

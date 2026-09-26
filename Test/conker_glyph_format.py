@@ -475,6 +475,61 @@ class ConkerFont:
 
         raise ValueError(f"no free charmap slot is reachable for U+{code:04X}")
 
+    def clear_glyph(self, glyph_index):
+        """Clear a glyph in place: wipe its charmap entries and its record.
+
+        This does not physically delete anything - the glyph table is a
+        fixed array indexed by position, so a glyph can't be removed without
+        shifting every later glyph's index (and every charmap entry that
+        points to one) - too invasive and risky for what is meant to be a
+        simple "clear this slot" operation. Instead:
+
+        - Every charmap slot currently mapped to this glyph is cleared to
+          the same FFFF FFFF "empty slot" pattern used elsewhere for unused
+          charmap entries (see remove_glyph_character_alias).
+        - The glyph's own 16-byte record is zeroed out completely (all
+          fields, including field1/field2/byte14/byte15 and the rectangle),
+          leaving an empty/inert glyph at that index rather than removing
+          the slot itself.
+
+        glyph_count and every other glyph's index are left untouched, so
+        nothing else in the file needs to be renumbered.
+        """
+        if not (0 <= glyph_index < self.glyph_count):
+            raise ValueError(f"glyph index must be between 0 and {self.glyph_count - 1}")
+
+        # Clear every charmap entry pointing at this glyph, the same way
+        # remove_glyph_character_alias clears a single one.
+        charmap_start = self._charmap_start()
+        codes_to_clear = [code for code, idx in self.charmap.items() if idx == glyph_index]
+        for code in codes_to_clear:
+            step = (code >> 5) + 2
+            slot = (code + step) & (CHARMAP_SLOT_COUNT - 1)
+            found = False
+            for _ in range(CHARMAP_SLOT_COUNT):
+                offset = charmap_start + slot * CHARMAP_SLOT_SIZE
+                existing_code, existing_glyph_index = struct.unpack_from("<HH", self.data, offset)
+                if existing_code == code and existing_glyph_index == glyph_index:
+                    struct.pack_into("<HH", self.data, offset, SENTINEL, SENTINEL)
+                    found = True
+                    break
+                slot = (slot + step) & (CHARMAP_SLOT_COUNT - 1)
+            if not found:
+                raise ValueError(f"Could not find charmap slot for U+{code:04X}")
+            del self.charmap[code]
+            if code in self._charmap_offsets:
+                del self._charmap_offsets[code]
+
+        # Zero out the glyph's own record (all 16 bytes: unknown_field,
+        # field1, field2, the rectangle, byte14, byte15).
+        off = GLYPH_TABLE_OFFSET + glyph_index * GLYPH_REC_SIZE
+        self.data[off:off + 16] = b"\x00" * 16
+
+        g = Glyph(glyph_index)
+        self.glyphs[glyph_index] = g
+
+        self._apply_charmap_to_glyphs()
+
     # ---------- Writing ----------
 
     def write_glyph(self, glyph):
