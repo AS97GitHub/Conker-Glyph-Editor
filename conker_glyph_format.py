@@ -2,14 +2,34 @@
 conker_glyph_format.py
 """
 
+import math
 import struct
-import copy
 
 GLYPH_TABLE_OFFSET = 0x506
 GLYPH_REC_SIZE = 18
 GLYPH_COUNT_HEADER_OFFSET = 0x4d4
 
+# The glyph table is followed by one uint16 sentinel, then a fixed-size open
+# addressing table of (uint16 Unicode code point, uint16 glyph index) pairs.
+CHARMAP_LEADING_SENTINEL_SIZE = 2
+CHARMAP_SLOT_COUNT = 0x800
+CHARMAP_SLOT_SIZE = 4
+CHARMAP_SIZE = CHARMAP_SLOT_COUNT * CHARMAP_SLOT_SIZE
+
 SENTINEL = 0xFFFF  # "No rectangle" marker (space, system glyphs)
+
+# Glyph rectangle coordinates (x0/x1/y0/y1_raw) are uint16 values in a
+# 0..16384 space: raw = (pixel - offset) * 16384 / texture_size (see
+# FONT_PROFILES).  A real rectangle therefore never exceeds ~16384 (largest
+# value seen in the four shipped fonts: 16376).
+# "Special" glyphs (e.g. space) store a mirrored, negative-looking pair
+# instead: x1 = 65536 - x0 and y1 = 65536 - y0 as uint16, e.g. (32, 65504,
+# 34, 65502).  Every value found in them is >= 65496.
+# A glyph is treated as "special" (no drawable rectangle) when any of its four
+# coordinates is above this threshold.  The value is an empirically chosen cut
+# inside the empty gap between 16384 and 65496; it is NOT known to be a
+# constant taken from the game engine itself.
+SPECIAL_GLYPH_RAW_THRESHOLD = 60000
 
 # Calibration parameters per font
 FONT_PROFILES = {
@@ -26,27 +46,6 @@ FONT_PROFILES = {
         "X_DIV": 16384 / 1024, "Y_DIV": 16384 / 335, "X_OFFSET": -0.5, "Y_OFFSET": -0.5,
     },
 }
-
-# Character-to-glyph mapping table.
-#
-# Previously this was a set of hardcoded byte offsets found by manually inspecting
-# ConkerFont's default.bin. Those offsets turned out to be specific to that one
-# file - other fonts (FrontendTitle, Japanese variants, etc.) place the charmap
-# at different offsets, since it directly follows the glyph table and the glyph
-# table's size varies per font (different glyph_count).
-#
-# Instead, the charmap is now found AUTOMATICALLY by scanning for its structural
-# signature: it's a sequence of (uint16 code, uint16 glyph_index) pairs, where
-# glyph_index is always a valid index into the glyph table. See
-# ConkerFont._detect_charmap() below for the algorithm. The hardcoded values are
-# kept only as a documented fallback/reference for ConkerFont specifically.
-_LEGACY_CHARMAP_BLOCKS_CONKERFONT = [
-    (0x1392, 0x1412), (0x1416, 0x1496), (0x149a, 0x151a),
-    (0x15a2, 0x1622), (0x1626, 0x172a),  # NOTE: end corrected from 0x1726 to 0x172a -
-                                          # the original hardcoded range was missing
-                                          # one entry (0xFF 'ÿ' -> glyph 153), found
-                                          # by the automatic detector.
-]
 
 # Profile detection signatures: byte patterns at specific offsets
 _PROFILE_SIGNATURES = {
@@ -86,6 +85,21 @@ def detect_profile(data):
             if actual_bytes == expected_bytes:
                 return profile_name
     return None
+
+
+def _code_plausibility(code):
+    """Rank a code point for display (lower = more plausible to show).
+
+    Used when several codes point at the same glyph: Latin/Cyrillic/common
+    punctuation and CJK ranges are preferred over obscure Unicode blocks.
+    """
+    if 0x20 <= code < 0x7F: return 0          # ASCII
+    if 0x80 <= code < 0x250: return 1          # Latin-1 / Latin Extended
+    if 0x400 <= code < 0x500: return 1          # Cyrillic
+    if 0x2000 <= code < 0x2100: return 1          # general punctuation
+    if 0x3040 <= code < 0xA000: return 1          # Hiragana/Katakana/CJK
+    if 0xFF00 <= code < 0xFFF0: return 1          # fullwidth forms
+    return 2                                        # anything else: least preferred
 
 
 class Glyph:
@@ -246,159 +260,74 @@ class ConkerFont:
             g.y1_raw = struct.unpack("<H", rec[12:14])[0]
             g.byte14 = rec[14]
             g.byte15 = rec[15]
-            g.is_special = (
-                g.x0_raw > 60000 or g.x1_raw > 60000 or
-                g.y0_raw > 60000 or g.y1_raw > 60000
-            )
+            g.is_special = max(
+                g.x0_raw, g.x1_raw, g.y0_raw, g.y1_raw
+            ) > SPECIAL_GLYPH_RAW_THRESHOLD
             glyphs.append(g)
         return glyphs
 
     def _read_charmap(self):
-        """Automatically finds every (code, glyph_index) pair in the charmap
-        region of the file, without relying on any hardcoded offsets.
+        """Read the fixed 2048-slot character-to-glyph hash table.
 
-        Two-pass approach:
-          1. Scan for long runs of CONSECUTIVE character codes (e.g. 0x20, 0x21,
-             0x22, ...) where each entry's glyph_index is a valid index into the
-             glyph table. A run of several such entries in a row is extremely
-             unlikely to happen by chance, so this reliably locates the real
-             charmap blocks and - just as importantly - their 4-byte alignment
-             within the file.
-          2. Re-scan the whole region at that confirmed alignment, this time
-             accepting ANY single valid (code, glyph_index) pair, not just ones
-             that are part of a long run. This picks up the sparse/isolated
-             entries (typographic quotes, €, Kanji that isn't laid out in
-             sequential code-point order, etc.) that sit between the main runs
-             without a long consecutive sequence of their own.
-
-        Handles both small Latin-only fonts (ConkerFont, FrontendTitle - a few
-        hundred bytes of charmap) and large CJK fonts (ConkerFontJapanese,
-        FrontendTitleJapanese - well over a thousand glyphs, codes scattered
-        across the Hiragana/Katakana/Kanji/fullwidth Unicode ranges up to
-        0xFFFF) by sizing the search window and the accepted code range off the
-        actual glyph_count rather than fixed constants tuned for one font.
-
-        Falls back to the legacy hardcoded ConkerFont offsets if no candidate
-        region can be found at all (e.g. a corrupted or very unusual file).
+        The table follows the 18-byte glyph records and a single uint16
+        sentinel.  Each little-endian slot is ``(Unicode code point,
+        glyph_index)``; ``FFFF FFFF`` denotes an unused slot.  Entries are
+        placed with double hashing, but reading every slot directly avoids
+        depending on the probing algorithm or on heuristics about code ranges.
         """
-        search_start = GLYPH_TABLE_OFFSET + self.glyph_count * GLYPH_REC_SIZE
-        # Charmap entries are 4 bytes each. Budget generously (8x the minimum
-        # possible size, plus a fixed safety margin) so large CJK charmaps -
-        # which are not necessarily packed as tightly as one entry per glyph -
-        # are fully covered instead of being cut off partway through.
-        min_needed = self.glyph_count * 4
-        search_end = min(search_start + max(0x2000, min_needed * 8), len(self.data))
-
-        # Accept the full BMP range of character codes (0x20 up to 0xFFFF). This
-        # covers everything from Latin-1 to Hiragana/Katakana/Kanji/fullwidth
-        # forms used by the Japanese font variants. Using the same wide range
-        # for every font (rather than guessing "is this CJK?" from glyph_count,
-        # which turned out to be unreliable - some Japanese fonts have as few
-        # as ~370 glyphs) does not introduce false positives for Latin-only
-        # fonts either: tested against ConkerFont/FrontendTitle, the wide range
-        # finds the same entries as a narrower one, plus a couple of previously
-        # missed ones (e.g. the U+25A1 fallback glyph).
-        max_code = 0xFFFF
+        charmap_start = self._charmap_start()
+        charmap_end = charmap_start + CHARMAP_SIZE
+        if charmap_end > len(self.data):
+            raise ValueError(
+                f"{self.path}: truncated charmap "
+                f"(needs bytes 0x{charmap_start:X}..0x{charmap_end:X})"
+            )
 
         charmap = {}
-        charmap_offsets = {}  # code -> file offset of the 4-byte (code, glyph_idx) entry
-        alignments_seen = set()
-        first_run_start = None
-        last_run_end = search_start
-        pos = search_start
-        MIN_RUN = 8  # long enough that a chance match is effectively impossible
-
-        while pos + 4 <= search_end:
-            code, idx = struct.unpack("<HH", self.data[pos:pos + 4])
-            if idx < self.glyph_count and 0x20 <= code < max_code:
-                p = pos
-                expected = code
-                run = {}
-                run_offsets = {}
-                while p + 4 <= search_end:
-                    c, gi = struct.unpack("<HH", self.data[p:p + 4])
-                    if c != expected or gi >= self.glyph_count:
-                        break
-                    run[c] = gi
-                    run_offsets[c] = p
-                    expected += 1
-                    p += 4
-                if len(run) >= MIN_RUN:
-                    charmap.update(run)
-                    charmap_offsets.update(run_offsets)
-                    alignments_seen.add(pos % 4)
-                    if first_run_start is None:
-                        first_run_start = pos
-                    last_run_end = max(last_run_end, p)
-                    pos = p
-                    continue
-            pos += 2
-
-        if alignments_seen:
-            # Collect all sparse-pass candidates first (code -> [(glyph_idx,
-            # offset), ...]) instead of writing them straight into charmap, so
-            # conflicts can be resolved afterward.
-            sparse_by_glyph = {}
-            for align in alignments_seen:
-                pos2 = search_start + ((align - search_start) % 4)
-                while pos2 + 4 <= search_end:
-                    code, idx = struct.unpack("<HH", self.data[pos2:pos2 + 4])
-                    if idx < self.glyph_count and 0x20 <= code < max_code:
-                        sparse_by_glyph.setdefault(idx, []).append((code, pos2))
-                    pos2 += 4
-
-            # Conflict resolution: near the charmap/texture boundary, the next
-            # section's own data (observed: literal "texture" string, dev file
-            # paths, small integer fields) can coincidentally look like valid
-            # (code, glyph_idx) pairs. When several different codes claim the
-            # SAME glyph_index, that's the tell - real charmap data doesn't do
-            # this. Keep only the candidate physically closest to the trusted
-            # core range [first_run_start, last_run_end] established by the
-            # long-run pass; discard the rest as noise.
-            def distance_from_core(offset):
-                if first_run_start is not None and first_run_start <= offset <= last_run_end:
-                    return 0
-                if first_run_start is None:
-                    return 0
-                return min(abs(offset - first_run_start), abs(offset - last_run_end))
-
-            for idx, entries in sparse_by_glyph.items():
-                if len(entries) == 1:
-                    code, off = entries[0]
-                else:
-                    code, off = min(entries, key=lambda e: distance_from_core(e[1]))
-                charmap[code] = idx
-                charmap_offsets[code] = off
-
-        if not charmap:
-            # Fallback: nothing auto-detected (unexpected file layout) - use the
-            # legacy hardcoded ConkerFont ranges as a last resort.
-            for start, end in _LEGACY_CHARMAP_BLOCKS_CONKERFONT:
-                block = self.data[start:end]
-                for i in range(0, len(block) - 3, 4):
-                    code, idx = struct.unpack("<HH", block[i:i + 4])
-                    charmap[code] = idx
-                    charmap_offsets[code] = start + i
-
-        # The fallback glyph (shown for missing/unmapped characters) is recorded
-        # separately in the font header (fallback CODE, not glyph index) rather
-        # than living inside the main charmap blocks - and it can sit at a
-        # different byte alignment than the rest of the charmap (observed one
-        # entry off, i.e. %4 == 2 instead of %4 == 0), so it needs its own
-        # dedicated search rather than being picked up by the aligned scan above.
-        fallback_code = struct.unpack("<I", self.data[0x4d8:0x4dc])[0]
-        if fallback_code and fallback_code not in charmap:
-            pos3 = search_start
-            while pos3 + 4 <= search_end:
-                code, idx = struct.unpack("<HH", self.data[pos3:pos3 + 4])
-                if code == fallback_code and idx < self.glyph_count:
-                    charmap[code] = idx
-                    charmap_offsets[code] = pos3
-                    break
-                pos3 += 2
+        charmap_offsets = {}
+        for slot in range(CHARMAP_SLOT_COUNT):
+            offset = charmap_start + slot * CHARMAP_SLOT_SIZE
+            code, glyph_index = struct.unpack_from("<HH", self.data, offset)
+            if code == SENTINEL and glyph_index == SENTINEL:
+                continue
+            if code == SENTINEL or glyph_index == SENTINEL:
+                raise ValueError(
+                    f"{self.path}: malformed charmap slot {slot} at 0x{offset:X}"
+                )
+            if glyph_index >= self.glyph_count:
+                raise ValueError(
+                    f"{self.path}: charmap slot {slot} at 0x{offset:X} references "
+                    f"glyph {glyph_index}, but the font has {self.glyph_count} glyphs"
+                )
+            if code in charmap:
+                raise ValueError(
+                    f"{self.path}: duplicate U+{code:04X} in charmap"
+                )
+            charmap[code] = glyph_index
+            charmap_offsets[code] = offset
 
         self._charmap_offsets = charmap_offsets
         return charmap
+
+    def _charmap_start(self):
+        """Return the byte offset of slot zero in the fixed charmap."""
+        return (
+            GLYPH_TABLE_OFFSET
+            + self.glyph_count * GLYPH_REC_SIZE
+            + CHARMAP_LEADING_SENTINEL_SIZE
+        )
+
+    def count_empty_charmap_slots(self):
+        """Return how many of the CHARMAP_SLOT_COUNT fixed slots are unused
+        (raw bytes FFFF FFFF), i.e. free/empty entries in the hash table."""
+        charmap_start = self._charmap_start()
+        count = 0
+        for slot in range(CHARMAP_SLOT_COUNT):
+            offset = charmap_start + slot * CHARMAP_SLOT_SIZE
+            code, glyph_index = struct.unpack_from("<HH", self.data, offset)
+            if code == SENTINEL and glyph_index == SENTINEL:
+                count += 1
+        return count
 
     def _apply_charmap_to_glyphs(self):
         """Fills in Glyph.char (the human-readable character shown in the UI)
@@ -415,26 +344,289 @@ class ConkerFont:
         code landing in one of those rare blocks is more likely to be charmap
         detection noise than an intentional mapping.
         """
-        def plausibility(code):
-            if 0x20 <= code < 0x7F: return 0          # ASCII
-            if 0x80 <= code < 0x250: return 1          # Latin-1 / Latin Extended
-            if 0x400 <= code < 0x500: return 1          # Cyrillic
-            if 0x2000 <= code < 0x2100: return 1          # general punctuation
-            if 0x3040 <= code < 0xA000: return 1          # Hiragana/Katakana/CJK
-            if 0xFF00 <= code < 0xFFF0: return 1          # fullwidth forms
-            return 2                                        # anything else: least preferred
-
         idx_to_char = {}
         idx_to_rank = {}
         for code, idx in self.charmap.items():
             if not (0x20 <= code < 0xFFFF):
                 continue
-            rank = plausibility(code)
+            rank = _code_plausibility(code)
             if idx not in idx_to_rank or rank < idx_to_rank[idx]:
                 idx_to_rank[idx] = rank
                 idx_to_char[idx] = chr(code)
         for g in self.glyphs:
             g.char = idx_to_char.get(g.index, "")
+
+    # ---------- Charmap probing helpers ----------
+
+    @staticmethod
+    def _charmap_step(code):
+        """Probe step used by the game's open-addressing charmap."""
+        return (code >> 5) + 2
+
+    @classmethod
+    def _probe_chain_length(cls, code):
+        """Number of distinct slots the probe sequence of ``code`` can reach.
+
+        The table size is a power of two, so an even step only visits
+        ``CHARMAP_SLOT_COUNT / gcd(step, CHARMAP_SLOT_COUNT)`` slots.  For a few
+        codes (step divisible by 1024) that is only 2 slots, or even 1.  The
+        step itself is dictated by the game's lookup and must not be changed.
+        """
+        return CHARMAP_SLOT_COUNT // math.gcd(cls._charmap_step(code), CHARMAP_SLOT_COUNT)
+
+    @classmethod
+    def _probe_slots(cls, code):
+        """Yield every distinct slot reachable for ``code``, in probe order."""
+        step = cls._charmap_step(code)
+        slot = (code + step) & (CHARMAP_SLOT_COUNT - 1)
+        for _ in range(cls._probe_chain_length(code)):
+            yield slot
+            slot = (slot + step) & (CHARMAP_SLOT_COUNT - 1)
+
+    @staticmethod
+    def _slots_word(n):
+        if n % 10 == 1 and n % 100 != 11:
+            return f"{n} слот"
+        if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14:
+            return f"{n} слота"
+        return f"{n} слотов"
+
+    def _no_slot_message(self, code, free_slots=None):
+        if free_slots is None:
+            free_slots = self.count_empty_charmap_slots()
+        return (
+            f"код U+{code:04X} не может быть размещён: его цепочка зондирования "
+            f"({self._slots_word(self._probe_chain_length(code))}) полностью занята "
+            f"(свободных слотов во всей таблице: {free_slots} из {CHARMAP_SLOT_COUNT})"
+        )
+
+    def _slot_of(self, code):
+        return (self._charmap_offsets[code] - self._charmap_start()) // CHARMAP_SLOT_SIZE
+
+    def _entries_in_slot_order(self):
+        """Charmap entries ordered by physical slot (stable rebuild order)."""
+        return sorted(self.charmap.items(), key=lambda item: self._charmap_offsets[item[0]])
+
+    def _find_charmap_slot(self, code, glyph_index):
+        """Physical slot holding ``code -> glyph_index`` (searched along its probe chain)."""
+        charmap_start = self._charmap_start()
+        for slot in self._probe_slots(code):
+            existing_code, existing_glyph_index = struct.unpack_from(
+                "<HH", self.data, charmap_start + slot * CHARMAP_SLOT_SIZE
+            )
+            if existing_code == code and existing_glyph_index == glyph_index:
+                return slot
+        raise ValueError(f"Could not find charmap slot for U+{code:04X}")
+
+    def _chain_dependents(self, removed_slots, excluded_codes):
+        """Codes whose probe chain passes through one of ``removed_slots``
+        *before* reaching their own slot.  Emptying such a slot (FFFF FFFF)
+        would cut their chain, so a lookup that stops at the first empty slot
+        could no longer find them."""
+        removed_slots = set(removed_slots)
+        dependents = []
+        for code in self.charmap:
+            if code in excluded_codes:
+                continue
+            own_slot = self._slot_of(code)
+            for slot in self._probe_slots(code):
+                if slot == own_slot:
+                    break
+                if slot in removed_slots:
+                    dependents.append(code)
+                    break
+        return dependents
+
+    def _rebuild_charmap(self, entries):
+        """Rebuild the fixed table from ``(code, glyph_index)`` pairs.
+
+        Nothing is modified unless every entry could be placed; otherwise a
+        ValueError is raised and the font stays untouched.
+        """
+        entries = list(entries)
+        rebuilt = bytearray(b"\xFF" * CHARMAP_SIZE)
+        occupied = [False] * CHARMAP_SLOT_COUNT
+        for code, mapped_glyph_index in entries:
+            for slot in self._probe_slots(code):
+                if not occupied[slot]:
+                    struct.pack_into(
+                        "<HH", rebuilt, slot * CHARMAP_SLOT_SIZE, code, mapped_glyph_index
+                    )
+                    occupied[slot] = True
+                    break
+            else:
+                raise ValueError(
+                    self._no_slot_message(code, CHARMAP_SLOT_COUNT - len(entries))
+                )
+
+        charmap_start = self._charmap_start()
+        self.data[charmap_start:charmap_start + CHARMAP_SIZE] = rebuilt
+        self.charmap = self._read_charmap()
+        self._apply_charmap_to_glyphs()
+
+    def _remove_charmap_codes(self, codes, glyph_index):
+        """Remove ``codes`` (all mapped to ``glyph_index``) from the charmap.
+
+        If emptying their slots would cut the probe chain of some other entry,
+        the table is rebuilt without them instead of leaving holes.
+        """
+        codes = list(codes)
+        slots = {code: self._find_charmap_slot(code, glyph_index) for code in codes}
+        dependents = self._chain_dependents(slots.values(), set(codes))
+
+        if dependents:
+            removed = set(codes)
+            remaining = [
+                (code, idx) for code, idx in self._entries_in_slot_order()
+                if code not in removed
+            ]
+            try:
+                self._rebuild_charmap(remaining)
+            except ValueError as e:
+                names = ", ".join(f"U+{c:04X}" for c in sorted(dependents)[:5])
+                raise ValueError(
+                    f"удаление разорвало бы цепочки зондирования других символов "
+                    f"({names}{'…' if len(dependents) > 5 else ''}), а пересобрать "
+                    f"таблицу не удалось: {e}"
+                ) from e
+            return
+
+        charmap_start = self._charmap_start()
+        for code, slot in slots.items():
+            struct.pack_into(
+                "<HH", self.data, charmap_start + slot * CHARMAP_SLOT_SIZE, SENTINEL, SENTINEL
+            )
+            del self.charmap[code]
+            self._charmap_offsets.pop(code, None)
+        self._apply_charmap_to_glyphs()
+
+    def remap_glyph_character(self, glyph_index, old_code, new_code):
+        """Replace one glyph's Unicode code point without changing file size.
+
+        The charmap is open-addressed, so changing a code in place would make
+        it unreachable.  Rebuild its fixed 2048-slot table instead, preserving
+        every mapping except ``old_code -> glyph_index``.  The rebuilt table
+        uses the game's double-hash probe sequence.
+        """
+        if not (0 <= glyph_index < self.glyph_count):
+            raise ValueError(f"glyph index must be between 0 and {self.glyph_count - 1}")
+        if not (0 <= old_code < SENTINEL):
+            raise ValueError("the current character code is invalid")
+        if not (0 <= new_code < SENTINEL):
+            raise ValueError("character must be a BMP code point other than U+FFFF")
+        if self.charmap.get(old_code) != glyph_index:
+            raise ValueError(
+                f"U+{old_code:04X} is not assigned to glyph #{glyph_index}"
+            )
+        if new_code == old_code:
+            return
+        if new_code in self.charmap:
+            owner = self.charmap[new_code]
+            raise ValueError(
+                f"U+{new_code:04X} is already assigned to glyph #{owner}"
+            )
+
+        # Rebuild in physical-slot order, which gives a stable insertion order.
+        entries = [
+            (new_code if code == old_code else code, mapped_glyph_index)
+            for code, mapped_glyph_index in self._entries_in_slot_order()
+        ]
+        self._rebuild_charmap(entries)
+
+    def remove_glyph_character_alias(self, glyph_index, code):
+        """Remove a character mapping from a glyph.
+
+        Only allowed if the glyph has more than one character mapping.
+        This removes the specific code->glyph_index mapping from the charmap.
+        If the freed slot lies inside another entry's probe chain, the table
+        is rebuilt so no lookup chain is cut.
+        """
+        if not (0 <= glyph_index < self.glyph_count):
+            raise ValueError(f"glyph index must be between 0 and {self.glyph_count - 1}")
+        if not (0 <= code < SENTINEL):
+            raise ValueError("character must be a BMP code point other than U+FFFF")
+        if self.charmap.get(code) != glyph_index:
+            raise ValueError(
+                f"U+{code:04X} is not assigned to glyph #{glyph_index}"
+            )
+
+        glyph_codes = [c for c, idx in self.charmap.items() if idx == glyph_index]
+        if len(glyph_codes) <= 1:
+            raise ValueError(
+                f"Cannot remove the only character from glyph #{glyph_index}. "
+                "Use 'Add Character Alias' to add another character first."
+            )
+
+        self._remove_charmap_codes([code], glyph_index)
+
+    def add_glyph_character_alias(self, glyph_index, code):
+        """Map an additional Unicode code point to an existing glyph.
+
+        This fills one unused ``FFFF FFFF`` charmap slot.  The glyph's existing
+        mappings remain intact, so both the old and new characters render the
+        same atlas rectangle and metrics.
+        """
+        if not (0 <= glyph_index < self.glyph_count):
+            raise ValueError(f"glyph index must be between 0 and {self.glyph_count - 1}")
+        if not (0 <= code < SENTINEL):
+            raise ValueError("character must be a BMP code point other than U+FFFF")
+        if code in self.charmap:
+            owner = self.charmap[code]
+            raise ValueError(
+                f"U+{code:04X} is already assigned to glyph #{owner}"
+            )
+
+        charmap_start = self._charmap_start()
+        for slot in self._probe_slots(code):
+            offset = charmap_start + slot * CHARMAP_SLOT_SIZE
+            existing_code, existing_glyph_index = struct.unpack_from("<HH", self.data, offset)
+            if existing_code == SENTINEL and existing_glyph_index == SENTINEL:
+                struct.pack_into("<HH", self.data, offset, code, glyph_index)
+                self.charmap[code] = glyph_index
+                self._charmap_offsets[code] = offset
+                self._apply_charmap_to_glyphs()
+                return
+
+        raise ValueError(self._no_slot_message(code))
+
+    def clear_glyph(self, glyph_index):
+        """Clear a glyph in place: wipe its charmap entries and its record.
+
+        This does not physically delete anything - the glyph table is a
+        fixed array indexed by position, so a glyph can't be removed without
+        shifting every later glyph's index (and every charmap entry that
+        points to one) - too invasive and risky for what is meant to be a
+        simple "clear this slot" operation. Instead:
+
+        - Every charmap slot currently mapped to this glyph is cleared to
+          the same FFFF FFFF "empty slot" pattern used elsewhere for unused
+          charmap entries (see remove_glyph_character_alias).
+        - The glyph's own 16-byte record is zeroed out completely (all
+          fields, including field1/field2/byte14/byte15 and the rectangle),
+          leaving an empty/inert glyph at that index rather than removing
+          the slot itself.
+
+        glyph_count and every other glyph's index are left untouched, so
+        nothing else in the file needs to be renumbered.
+        """
+        if not (0 <= glyph_index < self.glyph_count):
+            raise ValueError(f"glyph index must be between 0 and {self.glyph_count - 1}")
+
+        # Clear every charmap entry pointing at this glyph, the same way
+        # remove_glyph_character_alias clears a single one.
+        codes_to_clear = [code for code, idx in self.charmap.items() if idx == glyph_index]
+        if codes_to_clear:
+            self._remove_charmap_codes(codes_to_clear, glyph_index)
+
+        # Zero out the glyph's own record (all 16 bytes: unknown_field,
+        # field1, field2, the rectangle, byte14, byte15).
+        off = GLYPH_TABLE_OFFSET + glyph_index * GLYPH_REC_SIZE
+        self.data[off:off + 16] = b"\x00" * 16
+
+        g = Glyph(glyph_index)
+        self.glyphs[glyph_index] = g
+
+        self._apply_charmap_to_glyphs()
 
     # ---------- Writing ----------
 
