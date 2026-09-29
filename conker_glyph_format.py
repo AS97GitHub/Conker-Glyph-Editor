@@ -385,19 +385,15 @@ class ConkerFont:
 
     @staticmethod
     def _slots_word(n):
-        if n % 10 == 1 and n % 100 != 11:
-            return f"{n} слот"
-        if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14:
-            return f"{n} слота"
-        return f"{n} слотов"
+        return f"{n} slot{'s' if n != 1 else ''}"
 
     def _no_slot_message(self, code, free_slots=None):
         if free_slots is None:
             free_slots = self.count_empty_charmap_slots()
         return (
-            f"код U+{code:04X} не может быть размещён: его цепочка зондирования "
-            f"({self._slots_word(self._probe_chain_length(code))}) полностью занята "
-            f"(свободных слотов во всей таблице: {free_slots} из {CHARMAP_SLOT_COUNT})"
+            f"code U+{code:04X} cannot be placed: its probe chain "
+            f"({self._slots_word(self._probe_chain_length(code))}) is completely full "
+            f"(free slots in entire table: {free_slots} of {CHARMAP_SLOT_COUNT})"
         )
 
     def _slot_of(self, code):
@@ -485,9 +481,9 @@ class ConkerFont:
             except ValueError as e:
                 names = ", ".join(f"U+{c:04X}" for c in sorted(dependents)[:5])
                 raise ValueError(
-                    f"удаление разорвало бы цепочки зондирования других символов "
-                    f"({names}{'…' if len(dependents) > 5 else ''}), а пересобрать "
-                    f"таблицу не удалось: {e}"
+                    f"removal would break probe chains of other characters "
+                    f"({names}{'...' if len(dependents) > 5 else ''}), but rebuilding "
+                    f"the table failed: {e}"
                 ) from e
             return
 
