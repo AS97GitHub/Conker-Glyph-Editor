@@ -215,9 +215,25 @@ class GlyphEditorApp:
         char_mgmt_frame = ttk.LabelFrame(right, text="Character Management")
         char_mgmt_frame.pack(fill=tk.X, padx=6, pady=6)
 
-        # First row for old char (used only for replace)
+        # First row for action selector
+        action_row = ttk.Frame(char_mgmt_frame)
+        action_row.pack(fill=tk.X, pady=(6, 2))
+        
+        ttk.Label(action_row, text="Action:", width=17, anchor="e").pack(
+            side=tk.LEFT, padx=(0, 2)
+        )
+        
+        self.char_action_var = tk.StringVar(value="add")
+        char_action_combo = ttk.Combobox(
+            action_row, textvariable=self.char_action_var,
+            values=["add", "remove", "replace", "clear_glyph"], state="readonly", width=10
+        )
+        char_action_combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        char_action_combo.bind("<<ComboboxSelected>>", self.on_char_action_changed)
+        
+        # Second row for old char (used only for replace/remove)
         replace_row = ttk.Frame(char_mgmt_frame)
-        replace_row.pack(fill=tk.X, pady=(6, 2))
+        replace_row.pack(fill=tk.X, pady=(2, 2))
         
         ttk.Label(replace_row, text="Old Char:", width=17, anchor="e").pack(
             side=tk.LEFT, padx=(0, 2)
@@ -228,7 +244,7 @@ class GlyphEditorApp:
         self.old_char_combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
         self.old_char_combo.config(state="disabled")  # Initially disabled
         
-        # Second row for new char + action
+        # Third row for new char
         char_mgmt_row = ttk.Frame(char_mgmt_frame)
         char_mgmt_row.pack(fill=tk.X, pady=(2, 2))
         
@@ -240,14 +256,7 @@ class GlyphEditorApp:
         self.char_mgmt_entry = ttk.Entry(char_mgmt_row, textvariable=self.char_mgmt_var, width=8)
         self.char_mgmt_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
         
-        self.char_action_var = tk.StringVar(value="add")
-        char_action_combo = ttk.Combobox(
-            char_mgmt_row, textvariable=self.char_action_var,
-            values=["add", "remove", "replace", "clear_glyph"], state="readonly", width=10
-        )
-        char_action_combo.pack(side=tk.LEFT, padx=(4, 0))
-        char_action_combo.bind("<<ComboboxSelected>>", self.on_char_action_changed)
-        
+        # Fourth row for apply button
         ttk.Button(char_mgmt_frame, text="Apply", command=self.apply_char_action).pack(
             fill=tk.X, pady=(2, 2)
         )
@@ -270,11 +279,13 @@ class GlyphEditorApp:
         help_content = (
             "LMB on glyph on texture - select.\n\n"
             "Drag corner handle - resize rectangle.\n"
-            "Drag center - move rectangle.\n\n"
+            "Drag glyph - move rectangle.\n\n"
             "You can also manually enter Start/End\n"
             "X/Y (in texture pixels) and click\n"
             "'Apply Changes'.\n\n"
-            "New Char / Old Char accept one BMP\n"
+            "Action selector: choose operation,\n"
+            "then fill relevant fields and Apply.\n\n"
+            "Old Char / New Char accept one BMP\n"
             "character or U+XXXX.\n\n"
             "add: maps New Char to the selected\n"
             "glyph (in addition to any existing\n"
