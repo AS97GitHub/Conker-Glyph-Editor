@@ -50,8 +50,6 @@ Download the latest `.exe` version from the [Releases](https://github.com/AS97Gi
 
 > ⚠️ On Windows, you can use either `python` or `py` to run the script, depending on your Python installation.
 
-> ⚠️ On Linux you may need to use `python3` instead of `python`.
-
 ```bash
 python conker_glyph_editor.py
 ```
