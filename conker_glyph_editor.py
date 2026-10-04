@@ -9,6 +9,7 @@ import struct
 import traceback
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
+import tkinter.font as tkfont
 
 from PIL import Image, ImageTk
 
@@ -26,10 +27,56 @@ DEFAULT_ZOOM = 4
 # DecompressionBombError - PIL refusing an absurdly large image
 EXPECTED_LOAD_ERRORS = (ValueError, OSError, struct.error, Image.DecompressionBombError)
 
+# --- Fonts -------------------------------------------------------------
+# Preferred family first, then fallbacks (Windows font -> Linux metric-compatible
+# equivalent). If none is installed, Tk's own default font is left untouched.
+UI_FONT_CANDIDATES = ("Tahoma", "Liberation Sans")
+MONO_FONT_CANDIDATES = ("Consolas", "Liberation Mono")
+UI_FONT_SIZE = 9
+MONO_FONT_SIZE = 10
+
+
+def _pick_family(root, candidates):
+    """Return the first installed font family from candidates (case-insensitive), or None."""
+    installed = {f.lower(): f for f in tkfont.families(root)}
+    for name in candidates:
+        if name.lower() in installed:
+            return installed[name.lower()]
+    return None
+
+
+def setup_fonts(root):
+    """Resolve UI/monospace families, apply them to Tk's named fonts, and
+    return (ui_font, mono_font) tuples for widgets that set a font explicitly.
+
+    Configuring the named fonts (TkDefaultFont etc.) also covers every widget
+    that has no explicit font: ttk buttons/labels/entries/tabs, menus, dialogs.
+    """
+    ui_family = _pick_family(root, UI_FONT_CANDIDATES)
+    mono_family = _pick_family(root, MONO_FONT_CANDIDATES)
+
+    if ui_family:
+        for name in ("TkDefaultFont", "TkTextFont", "TkMenuFont", "TkHeadingFont",
+                     "TkCaptionFont", "TkSmallCaptionFont", "TkIconFont", "TkTooltipFont"):
+            try:
+                tkfont.nametofont(name, root).configure(family=ui_family, size=UI_FONT_SIZE)
+            except tk.TclError:
+                pass
+    if mono_family:
+        try:
+            tkfont.nametofont("TkFixedFont", root).configure(family=mono_family, size=MONO_FONT_SIZE)
+        except tk.TclError:
+            pass
+
+    ui_font = (ui_family, UI_FONT_SIZE) if ui_family else "TkDefaultFont"
+    mono_font = (mono_family, MONO_FONT_SIZE) if mono_family else "TkFixedFont"
+    return ui_font, mono_font
+
 
 class GlyphEditorApp:
     def __init__(self, root):
         self.root = root
+        self.ui_font, self.mono_font = setup_fonts(root)
         self.root.title("Conker Glyph Editor")
         self.root.geometry("1200x760")
         
@@ -118,7 +165,7 @@ class GlyphEditorApp:
         glyph_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
         self.glyph_listbox = tk.Listbox(glyph_list_frame, yscrollcommand=glyph_scrollbar.set,
-                                         font=("Consolas", 10),
+                                         font=self.mono_font,
                                          selectmode=tk.SINGLE, exportselection=False)
         self.glyph_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         glyph_scrollbar.config(command=self.glyph_listbox.yview)
@@ -135,7 +182,7 @@ class GlyphEditorApp:
         charmap_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
         self.charmap_listbox = tk.Listbox(charmap_list_frame, yscrollcommand=charmap_scrollbar.set,
-                                           font=("Consolas", 10),
+                                           font=self.mono_font,
                                            selectmode=tk.SINGLE, exportselection=False)
         self.charmap_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         charmap_scrollbar.config(command=self.charmap_listbox.yview)
@@ -270,7 +317,7 @@ class GlyphEditorApp:
         
         help_text = tk.Text(help_frame, wrap=tk.WORD, width=30, height=10,
                             yscrollcommand=help_scrollbar.set,
-                            font=("Tahoma", 9), state=tk.DISABLED,
+                            font=self.ui_font, state=tk.DISABLED,
                             relief=tk.FLAT, highlightthickness=0,
                             background="#f0f0f0")
         help_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
