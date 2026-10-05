@@ -8,7 +8,9 @@ import re
 import struct
 import traceback
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
+from tkinter import ttk
+from tkinter import filedialog as _native_filedialog
+from tkinter import messagebox as _native_messagebox
 import tkinter.font as tkfont
 
 from PIL import Image, ImageTk
@@ -73,10 +75,385 @@ def setup_fonts(root):
     return ui_font, mono_font
 
 
+# --- Theme -------------------------------------------------------------
+# One palette for the whole UI (clam theme + classic tk widgets), so that no
+# widget keeps the default white background. Tweak colors here.
+PALETTE = {
+    "bg":       "#2d2d30",   # window / frames
+    "fg":       "#e6e6e6",   # text
+    "field":    "#1e1e1e",   # entries, listboxes, help text, scrollbar troughs
+    "canvas":   "#222222",   # texture canvas
+    "button":   "#3c3c40",   # buttons, inactive tabs, scrollbar thumbs
+    "active":   "#4a4a50",   # hover / pressed
+    "border":   "#55555a",
+    "select":   "#1f6f8b",   # selection background
+    "disabled": "#808080",
+}
+
+
+def _theme_tk_file_dialog(root, bg, fg):
+    """Tk's built-in file dialog (used on Linux, and on Windows via
+    USE_TK_FILE_DIALOG) hardcodes a white canvas and black text for the file
+    list. Patch its IconList constructor so it uses our colors."""
+    if sys.platform == "darwin":
+        return
+    tcl = root.tk
+    try:
+        # The classes/procs are autoloaded on first dialog use; load them now.
+        tcl.call("auto_load", "::tk::IconList")
+        tcl.call("auto_load", "::tk::IconList_Create")
+        if tcl.call("info", "commands", "::tk::IconList"):                # newer Tk 8.6 (TclOO)
+            arglist, body = tcl.call("info", "class", "definition", "::tk::IconList", "Create")
+            kind = "oo"
+        elif tcl.call("info", "commands", "::tk::IconList_Create"):       # older Tk 8.6 (procs)
+            arglist = tcl.call("info", "args", "::tk::IconList_Create")
+            body = tcl.call("info", "body", "::tk::IconList_Create")
+            kind = "proc"
+        else:
+            return
+        body = str(body).replace("-background white", f"-background {bg}")
+        body = body.replace("set fill black", f"set fill {fg}")
+        if kind == "oo":
+            tcl.call("oo::define", "::tk::IconList", "method", "Create", arglist, body)
+        else:
+            tcl.call("proc", "::tk::IconList_Create", arglist, body)
+    except tk.TclError:
+        pass                                    # cosmetic only: never block startup
+
+
+def apply_theme(root):
+    """Switch ttk to 'clam' and recolor ttk + classic tk widgets from PALETTE.
+    Must be called before the widgets are created (option_add only affects
+    widgets created afterwards)."""
+    c = PALETTE
+    style = ttk.Style(root)
+    style.theme_use("clam")
+    root.configure(background=c["bg"])
+
+    style.configure(".", background=c["bg"], foreground=c["fg"], fieldbackground=c["field"],
+                    bordercolor=c["border"], darkcolor=c["bg"], lightcolor=c["bg"],
+                    troughcolor=c["field"], focuscolor=c["select"], insertcolor=c["fg"],
+                    selectbackground=c["select"], selectforeground=c["fg"])
+    style.map(".", foreground=[("disabled", c["disabled"])])
+
+    style.configure("TButton", background=c["button"], bordercolor=c["border"],
+                    darkcolor=c["button"], lightcolor=c["button"],
+                    padding=(0, 2))
+
+    style.map("TButton",
+              background=[("pressed", c["active"]), ("active", c["active"]), ("disabled", c["bg"])],
+              lightcolor=[("pressed", c["active"]), ("active", c["button"]), ("focus", c["button"])],
+              darkcolor=[("pressed", c["active"]), ("active", c["button"]), ("focus", c["button"])],
+              bordercolor=[("disabled", c["border"]), ("pressed", c["border"]),
+                          ("active", c["border"]), ("focus", c["border"]),
+                          ("alternate", c["border"])])
+
+    # Menubuttons (e.g. "Directory" / "Files of type" in Tk's file dialog): clam turns
+    # them light on hover and draws a black arrow.
+    style.configure("TMenubutton", background=c["button"], foreground=c["fg"],
+                    bordercolor=c["border"], darkcolor=c["button"], lightcolor=c["button"],
+                    arrowcolor=c["fg"], padding=2)
+    style.map("TMenubutton",
+              background=[("pressed", c["active"]), ("active", c["active"]),
+                          ("disabled", c["bg"])],
+              lightcolor=[("pressed", c["active"]), ("active", c["active"])],
+              darkcolor=[("pressed", c["active"]), ("active", c["active"])],
+              foreground=[("disabled", c["disabled"])],
+              arrowcolor=[("disabled", c["disabled"])])
+
+    for name in ("TEntry", "TCombobox", "TSpinbox"):
+        style.configure(name, fieldbackground=c["field"], foreground=c["fg"],
+                        bordercolor=c["border"], darkcolor=c["field"], lightcolor=c["field"],
+                        insertcolor=c["fg"], arrowcolor=c["fg"])
+        style.map(name,
+                  fieldbackground=[("disabled", c["bg"]), ("readonly", c["field"])],
+                  foreground=[("disabled", c["disabled"])],
+                  selectbackground=[("!focus", c["select"])],
+                  selectforeground=[("!focus", c["fg"])])
+    for name in ("TEntry", "TCombobox", "TSpinbox"):
+        style.map(name, background=[("readonly", c["field"]), ("disabled", c["bg"])])
+    style.configure("TCombobox", background=c["button"])
+    style.configure("TSpinbox", background=c["button"])
+    style.map("TCombobox", background=[("active", c["active"])])
+    style.map("TSpinbox", background=[("active", c["active"])])
+
+    style.configure("TNotebook", background=c["bg"], bordercolor=c["border"])
+    style.configure("TNotebook.Tab", background=c["button"], foreground=c["fg"],
+                    bordercolor=c["border"])
+    style.map("TNotebook.Tab", background=[("selected", c["bg"]), ("active", c["active"])],
+              lightcolor=[("selected", c["bg"]), ("!selected", c["button"])])
+    style.configure("TNotebook.Tab", lightcolor=c["button"], darkcolor=c["button"])
+
+    style.configure("TScrollbar", background=c["button"], bordercolor=c["border"],
+                    troughcolor=c["field"], arrowcolor=c["fg"],
+                    darkcolor=c["button"], lightcolor=c["button"])
+    style.map("TScrollbar", background=[("active", c["active"])])
+
+    style.configure("TLabelframe", background=c["bg"], bordercolor=c["border"])
+    style.configure("TLabelframe.Label", background=c["bg"], foreground=c["fg"])
+
+    # Classic tk widgets (Listbox, Text, Menu, dialogs) and the combobox popup list.
+    for pattern, value in (
+        ("*Listbox.background", c["field"]), ("*Listbox.foreground", c["fg"]),
+        ("*Listbox.selectBackground", c["select"]), ("*Listbox.selectForeground", c["fg"]),
+        ("*Listbox.highlightThickness", 0), ("*Listbox.borderWidth", 1),
+        ("*Listbox.relief", "solid"),
+        ("*TCombobox*Listbox.background", c["field"]), ("*TCombobox*Listbox.foreground", c["fg"]),
+        ("*TCombobox*Listbox.selectBackground", c["select"]),
+        ("*TCombobox*Listbox.selectForeground", c["fg"]),
+        ("*Menu.background", c["bg"]), ("*Menu.foreground", c["fg"]),
+        ("*Menu.activeBackground", c["select"]), ("*Menu.activeForeground", c["fg"]),
+        ("*Dialog.background", c["bg"]), ("*Dialog.foreground", c["fg"]),
+    ):
+        root.option_add(pattern, value)
+    _theme_tk_file_dialog(root, c["field"], c["fg"])
+    return c
+
+
+# --- Themed popups -----------------------------------------------------
+# On Windows, tkinter's messagebox/filedialog are native OS dialogs: always light,
+# cannot be recolored. There we use our own message boxes and Tk's built-in
+# (themeable) file dialog. On Linux Tk already draws its own dialogs; on macOS the
+# native ones follow the system appearance.
+USE_THEMED_DIALOGS = sys.platform.startswith("win")
+USE_TK_FILE_DIALOG = sys.platform.startswith("win")
+
+
+def set_dark_titlebar(window):
+    """Windows 10 (1809+) / 11: ask DWM for a dark title bar. Silently does nothing elsewhere.
+    `window` is a Tk widget or a Tk window path (str)."""
+    if not sys.platform.startswith("win"):
+        return
+    try:
+        import ctypes
+        tcl = tk._default_root.tk
+        path = str(window)
+        tcl.call("update", "idletasks")
+        user32 = ctypes.windll.user32
+        # `winfo id` returns a hex string such as '0x00200003' - plain int() would fail on it.
+        hwnd = user32.GetParent(int(str(tcl.call("winfo", "id", path)), 0))
+        value = ctypes.c_int(1)
+        for attr in (20, 19):    # DWMWA_USE_IMMERSIVE_DARK_MODE (20; 19 on early builds)
+            if ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                    hwnd, attr, ctypes.byref(value), ctypes.sizeof(value)) == 0:
+                break
+        # Force the non-client area (title bar) to repaint if the window is already visible.
+        # SWP_NOSIZE | SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED
+        user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0004 | 0x0010 | 0x0020)
+    except Exception:
+        pass
+
+
+def _darken_tk_dialog_titlebars(root):
+    """Tk's built-in file dialog is a Tcl-created toplevel (class TkFDialog): give it a
+    dark title bar the moment it is shown."""
+    if not USE_TK_FILE_DIALOG or not sys.platform.startswith("win"):
+        return
+    try:
+        root.tk.createcommand("conker_dark_titlebar", set_dark_titlebar)
+        root.tk.call("bind", "TkFDialog", "<Map>", "conker_dark_titlebar %W")
+    except tk.TclError:
+        pass
+
+
+_ICON_COLORS = {"info": "#4aa3df", "question": "#4aa3df", "warning": "#e5b53b", "error": "#e05252"}
+
+
+def _themed_dialog(title, message, icon, buttons, default, cancel, parent=None):
+    """Modal message box in the app palette. buttons: [(key, label), ...];
+    returns the key of the pressed button (cancel key on Esc / window close)."""
+    c = PALETTE
+    parent = parent or tk._default_root
+    dlg = tk.Toplevel(parent)
+    dlg.withdraw()
+    dlg.title(title)
+    dlg.configure(background=c["bg"])
+    dlg.resizable(False, False)
+    if parent is not None:
+        dlg.transient(parent.winfo_toplevel())
+    # Set dialog icon
+    if _ICON_PATH and os.path.exists(_ICON_PATH):
+        try:
+            if sys.platform.startswith("win"):
+                dlg.iconbitmap(_ICON_PATH)
+            else:
+                with Image.open(_ICON_PATH) as ico:
+                    ico.load()
+                    icon_photo = ImageTk.PhotoImage(ico.convert("RGBA"))
+                dlg.iconphoto(True, icon_photo)
+        except Exception:
+            pass
+    result = {"key": cancel}
+
+    def finish(key):
+        result["key"] = key
+        dlg.destroy()
+
+    body = ttk.Frame(dlg, padding=(16, 14, 16, 8))
+    body.pack(fill=tk.BOTH, expand=True)
+    tk.Label(body, bitmap=icon, background=c["bg"], foreground=_ICON_COLORS.get(icon, c["fg"])
+             ).grid(row=0, column=0, sticky="n", padx=(0, 14))
+    ttk.Label(body, text=message, wraplength=420, justify=tk.LEFT
+              ).grid(row=0, column=1, sticky="w")
+
+    row = ttk.Frame(dlg, padding=(16, 4, 16, 14))
+    row.pack(fill=tk.X)
+    buttons_widgets = {}
+    for key, label in reversed(buttons):
+        b = ttk.Button(row, text=label, width=10, command=lambda k=key: finish(k))
+        b.pack(side=tk.RIGHT, padx=(6, 0))
+        buttons_widgets[key] = b
+
+    dlg.bind("<Return>", lambda e: finish(default))
+    dlg.bind("<Escape>", lambda e: finish(cancel))
+    dlg.protocol("WM_DELETE_WINDOW", lambda: finish(cancel))
+
+    # Center over the parent window, then show modally.
+    dlg.update_idletasks()
+    w, h = dlg.winfo_reqwidth(), dlg.winfo_reqheight()
+    if parent is not None and parent.winfo_viewable():
+        top = parent.winfo_toplevel()
+        x = top.winfo_rootx() + (top.winfo_width() - w) // 2
+        y = top.winfo_rooty() + (top.winfo_height() - h) // 2
+    else:
+        x = (dlg.winfo_screenwidth() - w) // 2
+        y = (dlg.winfo_screenheight() - h) // 2
+    dlg.geometry(f"+{max(x, 0)}+{max(y, 0)}")
+    set_dark_titlebar(dlg)
+    dlg.deiconify()
+    dlg.wait_visibility()
+    dlg.grab_set()
+    buttons_widgets[default].focus_set()
+    dlg.wait_window()
+    return result["key"]
+
+
+class _MessageBoxes:
+    """Drop-in for tkinter.messagebox (the subset this app uses)."""
+
+    def _native(self, name, title, message, kw):
+        return getattr(_native_messagebox, name)(title, message, **kw)
+
+    def showinfo(self, title, message, **kw):
+        if not USE_THEMED_DIALOGS:
+            return self._native("showinfo", title, message, kw)
+        _themed_dialog(title, message, "info", [("ok", "OK")], "ok", "ok", kw.get("parent"))
+        return "ok"
+
+    def showwarning(self, title, message, **kw):
+        if not USE_THEMED_DIALOGS:
+            return self._native("showwarning", title, message, kw)
+        _themed_dialog(title, message, "warning", [("ok", "OK")], "ok", "ok", kw.get("parent"))
+        return "ok"
+
+    def showerror(self, title, message, **kw):
+        if not USE_THEMED_DIALOGS:
+            return self._native("showerror", title, message, kw)
+        _themed_dialog(title, message, "error", [("ok", "OK")], "ok", "ok", kw.get("parent"))
+        return "ok"
+
+    def askyesno(self, title, message, **kw):
+        if not USE_THEMED_DIALOGS:
+            return self._native("askyesno", title, message, kw)
+        return _themed_dialog(title, message, "question", [("yes", "Yes"), ("no", "No")],
+                              "yes", "no", kw.get("parent")) == "yes"
+
+    def askyesnocancel(self, title, message, **kw):
+        if not USE_THEMED_DIALOGS:
+            return self._native("askyesnocancel", title, message, kw)
+        key = _themed_dialog(title, message, "question",
+                             [("yes", "Yes"), ("no", "No"), ("cancel", "Cancel")],
+                             "yes", "cancel", kw.get("parent"))
+        return {"yes": True, "no": False}.get(key)
+
+
+def _tk_file_dialog(kind, options):
+    """Call Tk's own (Tcl-implemented, themeable) file dialog: kind is 'open' or 'save'."""
+    root = options.get("parent") or tk._default_root
+    args = []
+    for key, value in options.items():
+        if key == "parent":
+            value = str(value)
+        if value:
+            args += ["-" + key, value]
+    if "parent" not in options:
+        args += ["-parent", str(root)]
+    root.tk.call("auto_load", "::tk::dialog::file::")
+    
+    # Apply dark titlebar and icon immediately using after_idle
+    def apply_dialog_settings():
+        try:
+            root.tk.call("update", "idletasks")
+            for w in root.tk.call("winfo", "children", "."):
+                try:
+                    if root.tk.call("winfo", "class", w) == "TkFDialog":
+                        set_dark_titlebar(w)
+                        root.tk.call("wm", "geometry", w, "480x320")
+
+                        # Set icon for file dialog
+                        if _ICON_PATH and os.path.exists(_ICON_PATH):
+                            try:
+                                if sys.platform.startswith("win"):
+                                    root.tk.call("wm", "iconbitmap", w, _ICON_PATH)
+                            except tk.TclError:
+                                pass
+                except tk.TclError:
+                    pass
+        except Exception:
+            pass
+    
+    root.after_idle(apply_dialog_settings)
+
+    result = root.tk.call("::tk::dialog::file::", kind, *args)
+    # Cancel comes back as an empty Tcl value (tkinter shows it as an empty tuple).
+    if not result:
+        return ""
+    if isinstance(result, (tuple, list)):
+        result = result[0]
+    return str(result)
+
+
+class _FileDialogs:
+    """Drop-in for tkinter.filedialog (askopenfilename / asksaveasfilename)."""
+
+    def askopenfilename(self, **options):
+        if USE_TK_FILE_DIALOG:
+            try:
+                return _tk_file_dialog("open", options)
+            except tk.TclError:
+                pass                              # fall back to the native dialog
+        return _native_filedialog.askopenfilename(**options)
+
+    def asksaveasfilename(self, **options):
+        if USE_TK_FILE_DIALOG:
+            try:
+                return _tk_file_dialog("save", options)
+            except tk.TclError:
+                pass
+        return _native_filedialog.asksaveasfilename(**options)
+
+
+# Global icon path for all dialogs
+_ICON_PATH = None
+
+
+def set_app_icon(icon_path):
+    """Set the icon path to be used for all dialog windows."""
+    global _ICON_PATH
+    _ICON_PATH = icon_path
+
+
+messagebox = _MessageBoxes()
+filedialog = _FileDialogs()
+
+
 class GlyphEditorApp:
     def __init__(self, root):
         self.root = root
         self.ui_font, self.mono_font = setup_fonts(root)
+        self.colors = apply_theme(root)
+        set_dark_titlebar(root)
+        _darken_tk_dialog_titlebars(root)
         self.root.title("Conker Glyph Editor")
         self.root.geometry("1200x760")
         
@@ -91,7 +468,8 @@ class GlyphEditorApp:
         
         icon_path = os.path.join(base_path, "resources", "icon.ico")
         if os.path.exists(icon_path):
-            self.root.iconbitmap(icon_path)
+            self._set_window_icon(icon_path)
+            set_app_icon(icon_path)
 
         self.font = None               # ConkerFont instance
         self.tex_image = None          # PIL.Image of the original texture
@@ -112,10 +490,10 @@ class GlyphEditorApp:
 
     def _build_ui(self):
         toolbar = ttk.Frame(self.root)
-        toolbar.pack(side=tk.TOP, fill=tk.X, padx=4, pady=4)
+        toolbar.pack(side=tk.TOP, fill=tk.X, padx=4, pady=(6, 2))
 
-        ttk.Button(toolbar, text="Open .bin...", command=self.open_bin).pack(side=tk.LEFT, padx=2)
-        ttk.Button(toolbar, text="Open texture...", command=self.open_texture).pack(side=tk.LEFT, padx=2)
+        ttk.Button(toolbar, text="Open .bin...", command=self.open_bin, padding=(8, 2)).pack(side=tk.LEFT, padx=(0, 3))
+        ttk.Button(toolbar, text="Open texture...", command=self.open_texture, padding=(8, 2)).pack(side=tk.LEFT, padx=(3, 0))
 
         ttk.Label(toolbar, text="Profile:").pack(side=tk.LEFT, padx=(16, 2))
         self.profile_var = tk.StringVar(value="ConkerFont")
@@ -132,8 +510,8 @@ class GlyphEditorApp:
                                  width=4, command=self.on_zoom_changed)
         zoom_spin.pack(side=tk.LEFT)
 
-        ttk.Button(toolbar, text="Save As...", command=self.save_as).pack(side=tk.RIGHT, padx=2)
-        ttk.Button(toolbar, text="Save (overwrite)", command=self.save_overwrite).pack(side=tk.RIGHT, padx=2)
+        ttk.Button(toolbar, text="Save As...", command=self.save_as, padding=(8, 2)).pack(side=tk.RIGHT, padx=(3, 0))
+        ttk.Button(toolbar, text="Save (overwrite)", command=self.save_overwrite, padding=(8, 2)).pack(side=tk.RIGHT, padx=(0, 3))
 
         self.status_var = tk.StringVar(value="Open default.bin and texture to start.")
         status_bar = ttk.Label(self.root, textvariable=self.status_var, anchor="w", relief=tk.SUNKEN)
@@ -148,18 +526,21 @@ class GlyphEditorApp:
         left.pack_propagate(False)
 
         self.left_notebook = ttk.Notebook(left)
-        self.left_notebook.pack(fill=tk.BOTH, expand=True, padx=4, pady=2)
+        self.left_notebook.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
 
         # --- Tabs ---
         style = ttk.Style()
-        style.configure("TNotebook.Tab", padding=(23, 1))
+        style.configure("TNotebook.Tab", padding=(31, 4))
+        # 'clam' maps its own padding for the selected tab ("6 4 6 2"), which overrides
+        # the line above and makes tabs resize on click. Pin it for every state.
+        style.map("TNotebook.Tab", padding=[("selected", (31, 5))], expand=[("selected", (0, 0, 0, 0))])
 
         # --- Tab 1: Glyphs ---
         glyphs_tab = ttk.Frame(self.left_notebook)
         self.left_notebook.add(glyphs_tab, text="Glyphs")
 
         glyph_list_frame = ttk.Frame(glyphs_tab)
-        glyph_list_frame.pack(fill=tk.BOTH, expand=True, pady=2)
+        glyph_list_frame.pack(fill=tk.BOTH, expand=True, pady=0)
 
         glyph_scrollbar = ttk.Scrollbar(glyph_list_frame)
         glyph_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
@@ -176,7 +557,7 @@ class GlyphEditorApp:
         self.left_notebook.add(charmap_tab, text="Charmap")
 
         charmap_list_frame = ttk.Frame(charmap_tab)
-        charmap_list_frame.pack(fill=tk.BOTH, expand=True, pady=2)
+        charmap_list_frame.pack(fill=tk.BOTH, expand=True, pady=0)
 
         charmap_scrollbar = ttk.Scrollbar(charmap_list_frame)
         charmap_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
@@ -200,14 +581,17 @@ class GlyphEditorApp:
 
         # Center panel: texture canvas
         center = ttk.Frame(main)
-        center.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        center.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, pady=(4, 0))
 
         canvas_frame = ttk.Frame(center)
         canvas_frame.pack(fill=tk.BOTH, expand=True)
 
         hbar = ttk.Scrollbar(canvas_frame, orient=tk.HORIZONTAL)
         vbar = ttk.Scrollbar(canvas_frame, orient=tk.VERTICAL)
-        self.canvas = tk.Canvas(canvas_frame, bg="#222222",
+        self.canvas = tk.Canvas(canvas_frame, bg=self.colors["canvas"],
+                                 highlightthickness=1,
+                                 highlightbackground=self.colors["border"],
+                                 highlightcolor=self.colors["border"],
                                  xscrollcommand=hbar.set, yscrollcommand=vbar.set)
         hbar.config(command=self.canvas.xview)
         vbar.config(command=self.canvas.yview)
@@ -228,7 +612,7 @@ class GlyphEditorApp:
         right.pack_propagate(False)
 
         props = ttk.LabelFrame(right, text="Glyph Properties")
-        props.pack(fill=tk.X, padx=6, pady=6)
+        props.pack(fill=tk.X, padx=4, pady=4)
 
         self.prop_vars = {}
         prop_fields = [
@@ -245,26 +629,26 @@ class GlyphEditorApp:
         ]
         for key, label in prop_fields:
             row = ttk.Frame(props)
-            row.pack(fill=tk.X, pady=2)
+            row.pack(fill=tk.X, pady=(2, 1))
             ttk.Label(row, text=label + ":", width=17, anchor="e").pack(side=tk.LEFT, padx=(0, 2))
             var = tk.StringVar(value="")
             entry = ttk.Entry(row, textvariable=var, width=12)
-            entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+            entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 2))
             self.prop_vars[key] = var
             if key == "index":
                 entry.config(state="readonly")
 
-        ttk.Button(props, text="Apply Changes", command=self.apply_property_edits).pack(
-            fill=tk.X, pady=(8, 2)
+        ttk.Button(props, text="Apply Changes", command=self.apply_property_edits, padding=2).pack(
+            fill=tk.X, padx=2, pady=2
         )
 
         # Character Management - separate frame
         char_mgmt_frame = ttk.LabelFrame(right, text="Character Management")
-        char_mgmt_frame.pack(fill=tk.X, padx=6, pady=6)
+        char_mgmt_frame.pack(fill=tk.X, padx=4, pady=4)
 
         # First row for action selector
         action_row = ttk.Frame(char_mgmt_frame)
-        action_row.pack(fill=tk.X, pady=(6, 2))
+        action_row.pack(fill=tk.X, pady=(2, 1))
         
         ttk.Label(action_row, text="Action:", width=17, anchor="e").pack(
             side=tk.LEFT, padx=(0, 2)
@@ -275,12 +659,12 @@ class GlyphEditorApp:
             action_row, textvariable=self.char_action_var,
             values=["add", "remove", "replace", "clear_glyph"], state="readonly", width=10
         )
-        char_action_combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        char_action_combo.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 2))
         char_action_combo.bind("<<ComboboxSelected>>", self.on_char_action_changed)
         
         # Second row for old char (used only for replace/remove)
         replace_row = ttk.Frame(char_mgmt_frame)
-        replace_row.pack(fill=tk.X, pady=(2, 2))
+        replace_row.pack(fill=tk.X, pady=(2, 1))
         
         ttk.Label(replace_row, text="Old Char:", width=17, anchor="e").pack(
             side=tk.LEFT, padx=(0, 2)
@@ -288,12 +672,12 @@ class GlyphEditorApp:
         
         self.old_char_var = tk.StringVar(value="")
         self.old_char_combo = ttk.Combobox(replace_row, textvariable=self.old_char_var, width=11)
-        self.old_char_combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.old_char_combo.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 2))
         self.old_char_combo.config(state="disabled")  # Initially disabled
         
         # Third row for new char
         char_mgmt_row = ttk.Frame(char_mgmt_frame)
-        char_mgmt_row.pack(fill=tk.X, pady=(2, 2))
+        char_mgmt_row.pack(fill=tk.X, pady=(2, 1))
         
         ttk.Label(char_mgmt_row, text="New Char:", width=17, anchor="e").pack(
             side=tk.LEFT, padx=(0, 2)
@@ -301,15 +685,15 @@ class GlyphEditorApp:
         
         self.char_mgmt_var = tk.StringVar(value="")
         self.char_mgmt_entry = ttk.Entry(char_mgmt_row, textvariable=self.char_mgmt_var, width=8)
-        self.char_mgmt_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.char_mgmt_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 2))
         
         # Fourth row for apply button
-        ttk.Button(char_mgmt_frame, text="Apply", command=self.apply_char_action).pack(
-            fill=tk.X, pady=(2, 2)
+        ttk.Button(char_mgmt_frame, text="Apply", command=self.apply_char_action, padding=2).pack(
+            fill=tk.X, padx=2, pady=2
         )
 
         help_frame = ttk.LabelFrame(right, text="Help / Info")
-        help_frame.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
+        help_frame.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
         
         # Create scrollable text widget for help
         help_scrollbar = ttk.Scrollbar(help_frame)
@@ -319,7 +703,9 @@ class GlyphEditorApp:
                             yscrollcommand=help_scrollbar.set,
                             font=self.ui_font, state=tk.DISABLED,
                             relief=tk.FLAT, highlightthickness=0,
-                            background="#f0f0f0")
+                            background=self.colors["field"],
+                            foreground=self.colors["fg"],
+                            insertbackground=self.colors["fg"])
         help_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         help_scrollbar.config(command=help_text.yview)
         
@@ -400,6 +786,24 @@ class GlyphEditorApp:
             return self.save_overwrite()
         return True             # No: discard changes
 
+    def _set_window_icon(self, icon_path):
+        """Set the window icon. .ico via iconbitmap works on Windows only; on
+        Linux/macOS Tk raises TclError for .ico, so fall back to iconphoto (via PIL).
+        A missing/broken icon must never prevent the app from starting."""
+        try:
+            if sys.platform.startswith("win"):
+                self.root.iconbitmap(icon_path)
+                return
+        except tk.TclError:
+            pass
+        try:
+            with Image.open(icon_path) as ico:
+                ico.load()
+                self._icon_photo = ImageTk.PhotoImage(ico.convert("RGBA"))  # keep a reference
+            self.root.iconphoto(True, self._icon_photo)
+        except Exception:
+            pass
+
     def on_closing(self):
         if self._confirm_discard_or_save():
             self.root.destroy()
@@ -407,7 +811,7 @@ class GlyphEditorApp:
     def open_bin(self):
         path = filedialog.askopenfilename(
             title="Open default.bin",
-            filetypes=[("BIN files", "*.bin"), ("All files", "*.*")],
+            filetypes=[("BIN files", "*.bin *.BIN"), ("All files", "*")],
         )
         if not path:
             return
@@ -457,7 +861,7 @@ class GlyphEditorApp:
     def open_texture(self):
         path = filedialog.askopenfilename(
             title="Open Texture",
-            filetypes=[("Images", "*.png *.bmp"), ("All files", "*.*")],
+            filetypes=[("Images", "*.png *.PNG *.bmp *.BMP"), ("All files", "*")],
         )
         if not path:
             return
@@ -518,7 +922,7 @@ class GlyphEditorApp:
         path = filedialog.asksaveasfilename(
             title="Save As",
             defaultextension=".bin",
-            filetypes=[("BIN files", "*.bin"), ("All files", "*.*")],
+            filetypes=[("BIN files", "*.bin *.BIN"), ("All files", "*")],
         )
         if not path:
             return False
@@ -1205,12 +1609,6 @@ class GlyphEditorApp:
 
 def main():
     root = tk.Tk()
-    try:
-        style = ttk.Style()
-        if "vista" in style.theme_names():
-            style.theme_use("vista")
-    except Exception:
-        pass
     app = GlyphEditorApp(root)
 
     # Open immediately if paths are passed via CLI arguments
