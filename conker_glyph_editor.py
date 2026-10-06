@@ -37,6 +37,11 @@ MONO_FONT_CANDIDATES = ("Consolas", "Liberation Mono")
 UI_FONT_SIZE = 9
 MONO_FONT_SIZE = 10
 
+TAB_WIDTHS = {
+    "Tahoma": 13,
+    "Liberation Sans": 13,
+}
+
 
 def _pick_family(root, candidates):
     """Return the first installed font family from candidates (case-insensitive), or None."""
@@ -79,15 +84,17 @@ def setup_fonts(root):
 # One palette for the whole UI (clam theme + classic tk widgets), so that no
 # widget keeps the default white background. Tweak colors here.
 PALETTE = {
-    "bg":       "#2d2d30",   # window / frames
-    "fg":       "#e6e6e6",   # text
-    "field":    "#1e1e1e",   # entries, listboxes, help text, scrollbar troughs
-    "canvas":   "#222222",   # texture canvas
-    "button":   "#3c3c40",   # buttons, inactive tabs, scrollbar thumbs
-    "active":   "#4a4a50",   # hover / pressed
-    "border":   "#55555a",
-    "select":   "#1f6f8b",   # selection background
-    "disabled": "#808080",
+    "bg":       "#24292e",   # window / frames
+    "fg":       "#d9dcde",   # text
+    "field":    "#1d2125",   # entries, listboxes, help text, scrollbar troughs
+    "canvas":   "#1d2125",   # texture canvas
+    "button":   "#2f363d",   # buttons, inactive tabs, scrollbar thumbs
+    "active":   "#333b42",   # hover / pressed
+    "border":   "#41484f",
+    "select":   "#444d56",   # selection background
+    "disabled": "#959da5",
+    "tab_active": "#1d2125",   # active tab background
+    "button_border_hover": "#58a6ff",   # button border on hover
 }
 
 
@@ -145,7 +152,7 @@ def apply_theme(root):
               lightcolor=[("pressed", c["active"]), ("active", c["button"]), ("focus", c["button"])],
               darkcolor=[("pressed", c["active"]), ("active", c["button"]), ("focus", c["button"])],
               bordercolor=[("disabled", c["border"]), ("pressed", c["border"]),
-                          ("active", c["border"]), ("focus", c["border"]),
+                          ("active", c["button_border_hover"]), ("focus", c["border"]),
                           ("alternate", c["border"])])
 
     # Menubuttons (e.g. "Directory" / "Files of type" in Tk's file dialog): clam turns
@@ -159,7 +166,8 @@ def apply_theme(root):
               lightcolor=[("pressed", c["active"]), ("active", c["active"])],
               darkcolor=[("pressed", c["active"]), ("active", c["active"])],
               foreground=[("disabled", c["disabled"])],
-              arrowcolor=[("disabled", c["disabled"])])
+              arrowcolor=[("disabled", c["disabled"])],
+              bordercolor=[("active", c["button_border_hover"])])
 
     for name in ("TEntry", "TCombobox", "TSpinbox"):
         style.configure(name, fieldbackground=c["field"], foreground=c["fg"],
@@ -180,8 +188,8 @@ def apply_theme(root):
     style.configure("TNotebook", background=c["bg"], bordercolor=c["border"])
     style.configure("TNotebook.Tab", background=c["button"], foreground=c["fg"],
                     bordercolor=c["border"])
-    style.map("TNotebook.Tab", background=[("selected", c["bg"]), ("active", c["active"])],
-              lightcolor=[("selected", c["bg"]), ("!selected", c["button"])])
+    style.map("TNotebook.Tab", background=[("selected", c["tab_active"]), ("active", c["active"])],
+              lightcolor=[("selected", c["tab_active"]), ("!selected", c["button"])])
     style.configure("TNotebook.Tab", lightcolor=c["button"], darkcolor=c["button"])
 
     style.configure("TScrollbar", background=c["button"], bordercolor=c["border"],
@@ -521,19 +529,23 @@ class GlyphEditorApp:
         main.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
         # Left panel: glyph list / charmap, in tabs
-        left = ttk.Frame(main, width=225)
+        left = ttk.Frame(main, width=218)
         left.pack(side=tk.LEFT, fill=tk.Y)
         left.pack_propagate(False)
 
         self.left_notebook = ttk.Notebook(left)
         self.left_notebook.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
 
+        font_name = self.ui_font[0] if isinstance(self.ui_font, tuple) else self.ui_font.actual("family")
+
+        tab_width = TAB_WIDTHS.get(font_name, 13)
+
         # --- Tabs ---
         style = ttk.Style()
-        style.configure("TNotebook.Tab", padding=(31, 4))
+        style.configure("TNotebook.Tab", width=tab_width, padding=(0, 4, 0, 4), anchor="center")
         # 'clam' maps its own padding for the selected tab ("6 4 6 2"), which overrides
         # the line above and makes tabs resize on click. Pin it for every state.
-        style.map("TNotebook.Tab", padding=[("selected", (31, 5))], expand=[("selected", (0, 0, 0, 0))])
+        style.map("TNotebook.Tab", padding=[("selected", (0, 7, 0, 4))], expand=[("selected", (0, 0, 0, 0))])
 
         # --- Tab 1: Glyphs ---
         glyphs_tab = ttk.Frame(self.left_notebook)
@@ -547,7 +559,8 @@ class GlyphEditorApp:
 
         self.glyph_listbox = tk.Listbox(glyph_list_frame, yscrollcommand=glyph_scrollbar.set,
                                          font=self.mono_font,
-                                         selectmode=tk.SINGLE, exportselection=False)
+                                         selectmode=tk.SINGLE, exportselection=False,
+                                         borderwidth=0, relief="flat")
         self.glyph_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         glyph_scrollbar.config(command=self.glyph_listbox.yview)
         self.glyph_listbox.bind("<<ListboxSelect>>", self.on_listbox_select)
@@ -564,7 +577,8 @@ class GlyphEditorApp:
 
         self.charmap_listbox = tk.Listbox(charmap_list_frame, yscrollcommand=charmap_scrollbar.set,
                                            font=self.mono_font,
-                                           selectmode=tk.SINGLE, exportselection=False)
+                                           selectmode=tk.SINGLE, exportselection=False,
+                                           borderwidth=0, relief="flat")
         self.charmap_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         charmap_scrollbar.config(command=self.charmap_listbox.yview)
         self.charmap_listbox.bind("<<ListboxSelect>>", self.on_charmap_listbox_select)
