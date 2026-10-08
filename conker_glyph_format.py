@@ -1,9 +1,16 @@
 """
-conker_glyph_format.py
+conker_glyph_format.py - reader/patcher for the glyph table and character map of
+Conker: Live & Reloaded CAFF font files (default.bin).
+
+Edits are applied in place to the in-memory file image; everything outside the
+touched records stays byte-identical.
 """
 
 import math
+import os
+import shutil
 import struct
+import tempfile
 
 GLYPH_TABLE_OFFSET = 0x506
 GLYPH_REC_SIZE = 18
@@ -70,10 +77,10 @@ _PROFILE_SIGNATURES = {
 
 def detect_profile(data):
     """Auto-detect font profile from byte signatures in the file.
-    
+
     Args:
         data: bytearray or bytes of the file contents
-        
+
     Returns:
         str: Profile name if detected, None if no match found
     """
@@ -186,10 +193,11 @@ class Glyph:
         integers, and x_off/y_off are non-integer per profile (e.g. -0.5), so
         raw/DIV + OFFSET lands a fraction of a pixel off an integer purely from
         that arithmetic (observed max deviation ~0.01-0.05px across all four
-        profiles) - not a meaningful sub-pixel value. Rounding here keeps the
-        displayed/drawn coordinate consistent with what set_from_pixels() will
-        write back, so re-saving an untouched glyph reproduces the original
-        raw value exactly.
+        profiles) - not a meaningful sub-pixel value.
+
+        The round trip raw -> pixels -> raw is lossy (a pixel spans dozens of raw
+        units), so callers should only call set_from_pixels() for a rectangle
+        that was actually edited.
         """
         if self.is_special:
             return None
@@ -200,11 +208,25 @@ class Glyph:
         return (x0, y0, x1, y1)
 
     def set_from_pixels(self, x0, y0, x1, y1, x_div, y_div, x_off, y_off):
-        """Inverse conversion: from pixel coordinates back to raw values."""
-        self.x0_raw = int((x0 - x_off) * x_div)
-        self.x1_raw = int((x1 - x_off) * x_div)
-        self.y0_raw = int((y0 - y_off) * y_div)
-        self.y1_raw = int((y1 - y_off) * y_div)
+        """Inverse conversion: from pixel coordinates back to raw values.
+
+        Raises ValueError, leaving the glyph untouched, if a coordinate is not a
+        finite number or its raw value would not be a drawable rectangle
+        (0..SPECIAL_GLYPH_RAW_THRESHOLD; larger values are what the format
+        reserves for "special" glyphs, and uint16 cannot hold negatives).
+        """
+        raws = []
+        for pixel, div, off in ((x0, x_div, x_off), (x1, x_div, x_off),
+                                (y0, y_div, y_off), (y1, y_div, y_off)):
+            if not math.isfinite(pixel):
+                raise ValueError("Coordinates must be finite numbers")
+            raw = int((pixel - off) * div)
+            if not 0 <= raw <= SPECIAL_GLYPH_RAW_THRESHOLD:
+                raise ValueError(
+                    f"Coordinate {pixel:g} is outside the texture range of this profile"
+                )
+            raws.append(raw)
+        self.x0_raw, self.x1_raw, self.y0_raw, self.y1_raw = raws
         self.is_special = False
 
     def clone(self):
@@ -212,6 +234,10 @@ class Glyph:
         for slot in self.__slots__:
             setattr(g, slot, getattr(self, slot))
         return g
+
+    def same_data(self, other):
+        """True if every field (including index and char) equals ``other``'s."""
+        return all(getattr(self, slot) == getattr(other, slot) for slot in self.__slots__)
 
 
 class ConkerFont:
@@ -222,18 +248,22 @@ class ConkerFont:
         self.path = path
         with open(path, "rb") as f:
             self.data = bytearray(f.read())
-        
-        # Auto-detect profile if not specified
-        if profile_name is None:
-            profile_name = detect_profile(self.data)
-            if profile_name is None:
-                profile_name = "ConkerFont"  # Fallback to default
-        
-        self.profile_name = profile_name
-        self.profile = FONT_PROFILES[profile_name]
 
         if self.data[0:4] != b"CAFF":
             raise ValueError(f"{path}: does not look like a CAFF container (magic={self.data[0:4]!r})")
+        if len(self.data) < GLYPH_COUNT_HEADER_OFFSET + 4:
+            raise ValueError(f"{path}: truncated file (no glyph count in header)")
+
+        detected = None
+        if profile_name is None:
+            detected = detect_profile(self.data)
+            profile_name = detected or "ConkerFont"  # fall back to the default profile
+        if profile_name not in FONT_PROFILES:
+            raise ValueError(f"unknown font profile {profile_name!r}")
+
+        self.profile_name = profile_name
+        self.profile = FONT_PROFILES[profile_name]
+        self.profile_autodetected = detected is not None
 
         self.glyph_count = struct.unpack(
             "<I", self.data[GLYPH_COUNT_HEADER_OFFSET:GLYPH_COUNT_HEADER_OFFSET + 4]
@@ -246,6 +276,12 @@ class ConkerFont:
     # ---------- Reading ----------
 
     def _read_glyphs(self):
+        table_end = GLYPH_TABLE_OFFSET + self.glyph_count * GLYPH_REC_SIZE
+        if table_end > len(self.data):
+            raise ValueError(
+                f"{self.path}: truncated glyph table "
+                f"(needs bytes up to 0x{table_end:X}, file has 0x{len(self.data):X})"
+            )
         glyphs = []
         for i in range(self.glyph_count):
             off = GLYPH_TABLE_OFFSET + i * GLYPH_REC_SIZE
@@ -317,6 +353,10 @@ class ConkerFont:
             + CHARMAP_LEADING_SENTINEL_SIZE
         )
 
+    def codes_for_glyph(self, glyph_index):
+        """Sorted list of every Unicode code point mapped to ``glyph_index``."""
+        return sorted(code for code, idx in self.charmap.items() if idx == glyph_index)
+
     def count_empty_charmap_slots(self):
         """Return how many of the CHARMAP_SLOT_COUNT fixed slots are unused
         (raw bytes FFFF FFFF), i.e. free/empty entries in the hash table."""
@@ -331,11 +371,7 @@ class ConkerFont:
 
     def _apply_charmap_to_glyphs(self):
         """Fills in Glyph.char (the human-readable character shown in the UI)
-        from the charmap. Uses the full BMP range (0x20-0xFFFF), matching
-        _read_charmap - the previous narrower 0x20-0x2100 cutoff hid every CJK
-        character (Hiragana/Katakana/Kanji all start at 0x3040+), leaving
-        `char` empty for them even though the charmap itself had the right
-        entry.
+        from the charmap, using the BMP range 0x20-0xFFFE (CJK included).
 
         When several codes point at the same glyph (can legitimately happen -
         e.g. full-width and half-width variants of the same character), picks
@@ -546,8 +582,7 @@ class ConkerFont:
                 f"U+{code:04X} is not assigned to glyph #{glyph_index}"
             )
 
-        glyph_codes = [c for c, idx in self.charmap.items() if idx == glyph_index]
-        if len(glyph_codes) <= 1:
+        if len(self.codes_for_glyph(glyph_index)) <= 1:
             raise ValueError(
                 f"Cannot remove the only character from glyph #{glyph_index}. "
                 "Use 'Add Character Alias' to add another character first."
@@ -610,7 +645,7 @@ class ConkerFont:
 
         # Clear every charmap entry pointing at this glyph, the same way
         # remove_glyph_character_alias clears a single one.
-        codes_to_clear = [code for code, idx in self.charmap.items() if idx == glyph_index]
+        codes_to_clear = self.codes_for_glyph(glyph_index)
         if codes_to_clear:
             self._remove_charmap_codes(codes_to_clear, glyph_index)
 
@@ -642,17 +677,33 @@ class ConkerFont:
             glyph.byte14,
             glyph.byte15,
         )
-        assert len(rec) == 16, f"internal error: record must be 16 bytes, got {len(rec)}"
         self.data[off:off + 16] = rec
         self.glyphs[i] = glyph
 
     def save(self, out_path=None):
         """Saves the entire file (with applied edits) to the target path.
-        If out_path is None, overwrites the source file (self.path)."""
-        target = out_path or self.path
-        with open(target, "wb") as f:
-            f.write(self.data)
-        return target
+        If out_path is None, overwrites the source file (self.path).
+
+        The data goes to a temporary file in the same directory which then
+        replaces the target atomically, so a failed write cannot leave a
+        half-written (corrupt) file behind."""
+        result = out_path or self.path
+        target = os.path.realpath(result)          # write through symlinks
+        fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(target),
+                                        prefix=".conker_", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(self.data)
+            if os.path.exists(target):
+                shutil.copymode(target, tmp_path)  # keep the original permissions
+            os.replace(tmp_path, target)
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+        return result
 
     # ---------- High-level helper functions ----------
 

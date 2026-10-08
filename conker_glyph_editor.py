@@ -1,5 +1,8 @@
 """
-conker_glyph_editor.py
+conker_glyph_editor.py - Tkinter editor for the glyph rectangles, metrics and
+character map of Conker: Live & Reloaded CAFF font files (default.bin).
+
+Usage: python conker_glyph_editor.py [default.bin [texture.png]]
 """
 
 import os
@@ -20,6 +23,7 @@ from conker_glyph_format import ConkerFont, FONT_PROFILES
 
 HANDLE_SIZE = 6          # Size of corner handle box for dragging (in screen pixels)
 DEFAULT_ZOOM = 4
+MIN_ZOOM, MAX_ZOOM = 1, 16
 
 
 # Errors that mean "this file is unreadable/corrupt" (expected, user-facing):
@@ -31,17 +35,36 @@ EXPECTED_LOAD_ERRORS = (ValueError, OSError, struct.error, Image.DecompressionBo
 
 # --- Fonts -------------------------------------------------------------
 # Preferred family first, then fallbacks (Windows font -> Linux metric-compatible
-# equivalent). If none is installed, Tk's own default font is left untouched.
-UI_FONT_CANDIDATES = ("Tahoma", "Liberation Sans")
-MONO_FONT_CANDIDATES = ("Consolas", "Liberation Mono")
+# equivalent).
+UI_FONT_CANDIDATES = (
+    "Segoe UI",         # Windows
+    "Ubuntu",           # Ubuntu
+    "sans-serif",
+)
+
+MONO_FONT_CANDIDATES = (
+    "Consolas",         # Windows
+    "Ubuntu Mono",      # Ubuntu
+    "monospace",
+)
+
+# Font used for **bold** fragments in the Help / Info text: (family, weight).
+# "Segoe UI Black" is a separate family (already heavy), so it is used with
+# weight "normal"; Ubuntu and generic sans-serif get a real bold weight.
+BOLD_FONT_CANDIDATES = (
+    ("Segoe UI Black", "normal"),   # Windows
+    ("Ubuntu", "bold"),             # Ubuntu
+    ("sans-serif", "bold"),
+)
+
 UI_FONT_SIZE = 9
 MONO_FONT_SIZE = 10
 
 TAB_WIDTHS = {
-    "Tahoma": 13,
-    "Liberation Sans": 13,
+    "Segoe UI": 16,
+    "Ubuntu": 14,
+    "sans-serif": 13,
 }
-
 
 def _pick_family(root, candidates):
     """Return the first installed font family from candidates (case-insensitive), or None."""
@@ -78,6 +101,19 @@ def setup_fonts(root):
     ui_font = (ui_family, UI_FONT_SIZE) if ui_family else "TkDefaultFont"
     mono_font = (mono_family, MONO_FONT_SIZE) if mono_family else "TkFixedFont"
     return ui_font, mono_font
+
+
+def setup_bold_font(root, ui_font):
+    """Return a tkfont.Font for emphasized text: the first installed family from
+    BOLD_FONT_CANDIDATES, otherwise the UI font made bold."""
+    found = _pick_family(root, [family for family, _ in BOLD_FONT_CANDIDATES])
+    if found:
+        weight = dict((f.lower(), w) for f, w in BOLD_FONT_CANDIDATES)[found.lower()]
+        return tkfont.Font(root=root, family=found, size=UI_FONT_SIZE, weight=weight)
+    # Font(font=..., weight=...) ignores the extra options, so configure afterwards.
+    fallback = tkfont.Font(root=root, font=ui_font)
+    fallback.configure(weight="bold")
+    return fallback
 
 
 # --- Theme -------------------------------------------------------------
@@ -197,6 +233,11 @@ def apply_theme(root):
                     darkcolor=c["button"], lightcolor=c["button"])
     style.map("TScrollbar", background=[("active", c["active"])])
 
+    # Draggable splitter between the side panels and the canvas
+    style.configure("TPanedwindow", background=c["bg"])
+    style.configure("Sash", sashthickness=4, gripcount=0, background=c["bg"],
+                    bordercolor=c["border"], lightcolor=c["bg"], darkcolor=c["bg"])
+
     style.configure("TLabelframe", background=c["bg"], bordercolor=c["border"])
     style.configure("TLabelframe.Label", background=c["bg"], foreground=c["fg"])
 
@@ -226,6 +267,42 @@ def apply_theme(root):
 USE_THEMED_DIALOGS = sys.platform.startswith("win")
 USE_TK_FILE_DIALOG = sys.platform.startswith("win")
 
+_APP_ROOT = None     # the Tk root (set by GlyphEditorApp); dialog helpers need it
+_ICON_PATH = None    # window icon, also applied to our dialogs
+
+
+def set_app_root(root):
+    global _APP_ROOT
+    _APP_ROOT = root
+
+
+def set_app_icon(icon_path):
+    """Set the icon path to be used for all dialog windows."""
+    global _ICON_PATH
+    _ICON_PATH = icon_path
+
+
+def apply_window_icon(window, icon_path):
+    """Give a window the app icon: .ico via iconbitmap on Windows (the only place
+    it works), otherwise iconphoto via PIL. A missing/broken icon never raises.
+    Returns the PhotoImage (the caller must keep a reference) or None."""
+    if not icon_path or not os.path.exists(icon_path):
+        return None
+    if sys.platform.startswith("win"):
+        try:
+            window.iconbitmap(icon_path)
+            return None
+        except tk.TclError:
+            pass
+    try:
+        with Image.open(icon_path) as ico:
+            ico.load()
+            photo = ImageTk.PhotoImage(ico.convert("RGBA"))
+        window.iconphoto(True, photo)
+        return photo
+    except Exception:
+        return None
+
 
 def set_dark_titlebar(window):
     """Windows 10 (1809+) / 11: ask DWM for a dark title bar. Silently does nothing elsewhere.
@@ -234,7 +311,7 @@ def set_dark_titlebar(window):
         return
     try:
         import ctypes
-        tcl = tk._default_root.tk
+        tcl = (window if isinstance(window, tk.Misc) else _APP_ROOT).tk
         path = str(window)
         tcl.call("update", "idletasks")
         user32 = ctypes.windll.user32
@@ -271,7 +348,7 @@ def _themed_dialog(title, message, icon, buttons, default, cancel, parent=None):
     """Modal message box in the app palette. buttons: [(key, label), ...];
     returns the key of the pressed button (cancel key on Esc / window close)."""
     c = PALETTE
-    parent = parent or tk._default_root
+    parent = parent or _APP_ROOT
     dlg = tk.Toplevel(parent)
     dlg.withdraw()
     dlg.title(title)
@@ -279,18 +356,7 @@ def _themed_dialog(title, message, icon, buttons, default, cancel, parent=None):
     dlg.resizable(False, False)
     if parent is not None:
         dlg.transient(parent.winfo_toplevel())
-    # Set dialog icon
-    if _ICON_PATH and os.path.exists(_ICON_PATH):
-        try:
-            if sys.platform.startswith("win"):
-                dlg.iconbitmap(_ICON_PATH)
-            else:
-                with Image.open(_ICON_PATH) as ico:
-                    ico.load()
-                    icon_photo = ImageTk.PhotoImage(ico.convert("RGBA"))
-                dlg.iconphoto(True, icon_photo)
-        except Exception:
-            pass
+    dlg._icon_photo = apply_window_icon(dlg, _ICON_PATH)   # keep a reference
     result = {"key": cancel}
 
     def finish(key):
@@ -377,7 +443,7 @@ class _MessageBoxes:
 
 def _tk_file_dialog(kind, options):
     """Call Tk's own (Tcl-implemented, themeable) file dialog: kind is 'open' or 'save'."""
-    root = options.get("parent") or tk._default_root
+    root = options.get("parent") or _APP_ROOT
     args = []
     for key, value in options.items():
         if key == "parent":
@@ -387,7 +453,7 @@ def _tk_file_dialog(kind, options):
     if "parent" not in options:
         args += ["-parent", str(root)]
     root.tk.call("auto_load", "::tk::dialog::file::")
-    
+
     # Apply dark titlebar and icon immediately using after_idle
     def apply_dialog_settings():
         try:
@@ -409,7 +475,7 @@ def _tk_file_dialog(kind, options):
                     pass
         except Exception:
             pass
-    
+
     root.after_idle(apply_dialog_settings)
 
     result = root.tk.call("::tk::dialog::file::", kind, *args)
@@ -441,16 +507,6 @@ class _FileDialogs:
         return _native_filedialog.asksaveasfilename(**options)
 
 
-# Global icon path for all dialogs
-_ICON_PATH = None
-
-
-def set_app_icon(icon_path):
-    """Set the icon path to be used for all dialog windows."""
-    global _ICON_PATH
-    _ICON_PATH = icon_path
-
-
 messagebox = _MessageBoxes()
 filedialog = _FileDialogs()
 
@@ -458,13 +514,15 @@ filedialog = _FileDialogs()
 class GlyphEditorApp:
     def __init__(self, root):
         self.root = root
+        set_app_root(root)
         self.ui_font, self.mono_font = setup_fonts(root)
+        self.bold_font = setup_bold_font(root, self.ui_font)   # keep a reference
         self.colors = apply_theme(root)
         set_dark_titlebar(root)
         _darken_tk_dialog_titlebars(root)
         self.root.title("Conker Glyph Editor")
         self.root.geometry("1200x760")
-        
+
         # Set window icon
         # Handle both development and PyInstaller-compiled environments
         if getattr(sys, 'frozen', False):
@@ -473,15 +531,16 @@ class GlyphEditorApp:
         else:
             # Running in normal Python environment
             base_path = os.path.dirname(__file__)
-        
+
         icon_path = os.path.join(base_path, "resources", "icon.ico")
         if os.path.exists(icon_path):
-            self._set_window_icon(icon_path)
             set_app_icon(icon_path)
+            self._icon_photo = apply_window_icon(self.root, icon_path)   # keep a reference
 
         self.font = None               # ConkerFont instance
         self.tex_image = None          # PIL.Image of the original texture
-        self.tex_photo = None          # ImageTk.PhotoImage for display
+        self.tex_photo = None          # ImageTk.PhotoImage for display (cached per zoom)
+        self._tex_photo_zoom = None    # zoom level tex_photo was rendered for
         self.zoom = DEFAULT_ZOOM
         self.selected_index = None
         self.selected_code = None   # Current charmap code for the selected glyph
@@ -495,6 +554,65 @@ class GlyphEditorApp:
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
 
     # ------------------------------------------------------------------ UI
+
+    def _add_pane(self, frame, min_width, weight):
+        """Add a pane to the main PanedWindow and remember its minimum width."""
+        self._paned.add(frame, weight=weight)
+        self._pane_min_widths.append(min_width)
+
+    def _enable_pane_clamp(self, paned):
+        """Keep every pane at or above its minimum width while a sash is dragged.
+        The widget's bindtags are reordered so the class binding (which moves the
+        sash) runs first, then we clamp the result."""
+        tags = paned.bindtags()
+        paned.bindtags((tags[1], tags[0]) + tags[2:])
+        paned.bind("<B1-Motion>", self._clamp_sashes, add="+")
+        paned.bind("<ButtonRelease-1>", self._clamp_sashes, add="+")
+
+    def _clamp_sashes(self, _event=None):
+        paned = self._paned
+        mins = self._pane_min_widths
+        n = len(mins) - 1                      # number of sashes
+        if n < 1 or len(paned.panes()) != len(mins):
+            return
+        pos = [paned.sashpos(i) for i in range(n)]
+        total = paned.winfo_width()
+        for i in range(n):                     # left -> right: left pane minimum
+            prev = pos[i - 1] if i else 0
+            pos[i] = max(pos[i], prev + mins[i])
+        for i in reversed(range(n)):           # right -> left: right pane minimum
+            nxt = pos[i + 1] if i + 1 < n else total
+            pos[i] = min(pos[i], nxt - mins[i + 1])
+        for i in range(n):
+            if pos[i] != paned.sashpos(i):
+                paned.sashpos(i, pos[i])
+
+    @staticmethod
+    def _char_display(code, fallback=None):
+        """Printable form of a code point; control codes become U+XXXX (or fallback)."""
+        if code >= 0x20:
+            return chr(code)
+        return fallback if fallback is not None else f"U+{code:04X}"
+
+    def _mark_modified(self, message):
+        self.unsaved_changes = True
+        self.status_var.set(f"{message} (changes not saved to disk)")
+
+    def _commit_glyph_edit(self, g, refresh_list=True):
+        """Write an edited glyph back into the font and refresh the UI."""
+        self.font.write_glyph(g)
+        if refresh_list:
+            self._refresh_glyph_list()
+        self.select_glyph(g.index, preferred_code=self.selected_code)
+        self._mark_modified(f"Glyph #{g.index} updated")
+
+    @staticmethod
+    def _insert_marked_text(text_widget, content):
+        """Insert content into a Text widget; fragments wrapped in **...** get the
+        "bold" tag (the markers themselves are not shown)."""
+        for i, chunk in enumerate(re.split(r"\*\*(.+?)\*\*", content, flags=re.S)):
+            if chunk:
+                text_widget.insert(tk.END, chunk, ("bold",) if i % 2 else ())
 
     def _build_ui(self):
         toolbar = ttk.Frame(self.root)
@@ -514,9 +632,11 @@ class GlyphEditorApp:
 
         ttk.Label(toolbar, text="Zoom:").pack(side=tk.LEFT, padx=(16, 2))
         self.zoom_var = tk.IntVar(value=DEFAULT_ZOOM)
-        zoom_spin = ttk.Spinbox(toolbar, from_=1, to=16, textvariable=self.zoom_var,
+        zoom_spin = ttk.Spinbox(toolbar, from_=MIN_ZOOM, to=MAX_ZOOM, textvariable=self.zoom_var,
                                  width=4, command=self.on_zoom_changed)
         zoom_spin.pack(side=tk.LEFT)
+        for sequence in ("<Return>", "<FocusOut>"):      # typed values count too
+            zoom_spin.bind(sequence, lambda e: self.on_zoom_changed())
 
         ttk.Button(toolbar, text="Save As...", command=self.save_as, padding=(8, 2)).pack(side=tk.RIGHT, padx=(3, 0))
         ttk.Button(toolbar, text="Save (overwrite)", command=self.save_overwrite, padding=(8, 2)).pack(side=tk.RIGHT, padx=(0, 3))
@@ -525,23 +645,30 @@ class GlyphEditorApp:
         status_bar = ttk.Label(self.root, textvariable=self.status_var, anchor="w", relief=tk.SUNKEN)
         status_bar.pack(side=tk.BOTTOM, fill=tk.X)
 
-        main = ttk.Frame(self.root)
+        # One PanedWindow hosts left / center / right. The same sash logic serves
+        # both splitters; the center pane absorbs window resizing (weight=1).
+        main = ttk.PanedWindow(self.root, orient=tk.HORIZONTAL)
         main.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        self._paned = main
+        self._pane_min_widths = []
+        self._enable_pane_clamp(main)
 
         # Left panel: glyph list / charmap, in tabs
-        left = ttk.Frame(main, width=218)
-        left.pack(side=tk.LEFT, fill=tk.Y)
+        left = ttk.Frame(main, width=224)
         left.pack_propagate(False)
+        self._add_pane(left, min_width=150, weight=0)
 
         self.left_notebook = ttk.Notebook(left)
-        self.left_notebook.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
+        self.left_notebook.pack(fill=tk.BOTH, expand=True, padx=(4, 0), pady=4)
 
-        font_name = self.ui_font[0] if isinstance(self.ui_font, tuple) else self.ui_font.actual("family")
-
+        if isinstance(self.ui_font, tuple):
+            font_name = self.ui_font[0]
+        else:                       # named Tk font ("TkDefaultFont" fallback)
+            font_name = tkfont.nametofont(self.ui_font, self.root).actual("family")
         tab_width = TAB_WIDTHS.get(font_name, 13)
 
         # --- Tabs ---
-        style = ttk.Style()
+        style = ttk.Style(self.root)
         style.configure("TNotebook.Tab", width=tab_width, padding=(0, 4, 0, 4), anchor="center")
         # 'clam' maps its own padding for the selected tab ("6 4 6 2"), which overrides
         # the line above and makes tabs resize on click. Pin it for every state.
@@ -595,10 +722,10 @@ class GlyphEditorApp:
 
         # Center panel: texture canvas
         center = ttk.Frame(main)
-        center.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, pady=(4, 0))
+        self._add_pane(center, min_width=250, weight=1)
 
         canvas_frame = ttk.Frame(center)
-        canvas_frame.pack(fill=tk.BOTH, expand=True)
+        canvas_frame.pack(fill=tk.BOTH, expand=True, pady=(4, 0))
 
         hbar = ttk.Scrollbar(canvas_frame, orient=tk.HORIZONTAL)
         vbar = ttk.Scrollbar(canvas_frame, orient=tk.VERTICAL)
@@ -622,11 +749,11 @@ class GlyphEditorApp:
 
         # Right panel: selected glyph properties
         right = ttk.Frame(main, width=265)
-        right.pack(side=tk.RIGHT, fill=tk.Y)
         right.pack_propagate(False)
+        self._add_pane(right, min_width=200, weight=0)
 
         props = ttk.LabelFrame(right, text="Glyph Properties")
-        props.pack(fill=tk.X, padx=4, pady=4)
+        props.pack(fill=tk.X, padx=(0, 4), pady=4)
 
         self.prop_vars = {}
         prop_fields = [
@@ -658,16 +785,16 @@ class GlyphEditorApp:
 
         # Character Management - separate frame
         char_mgmt_frame = ttk.LabelFrame(right, text="Character Management")
-        char_mgmt_frame.pack(fill=tk.X, padx=4, pady=4)
+        char_mgmt_frame.pack(fill=tk.X, padx=(0, 4), pady=4)
 
         # First row for action selector
         action_row = ttk.Frame(char_mgmt_frame)
         action_row.pack(fill=tk.X, pady=(2, 1))
-        
+
         ttk.Label(action_row, text="Action:", width=17, anchor="e").pack(
             side=tk.LEFT, padx=(0, 2)
         )
-        
+
         self.char_action_var = tk.StringVar(value="add")
         char_action_combo = ttk.Combobox(
             action_row, textvariable=self.char_action_var,
@@ -675,44 +802,44 @@ class GlyphEditorApp:
         )
         char_action_combo.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 2))
         char_action_combo.bind("<<ComboboxSelected>>", self.on_char_action_changed)
-        
+
         # Second row for old char (used only for replace/remove)
         replace_row = ttk.Frame(char_mgmt_frame)
         replace_row.pack(fill=tk.X, pady=(2, 1))
-        
+
         ttk.Label(replace_row, text="Old Char:", width=17, anchor="e").pack(
             side=tk.LEFT, padx=(0, 2)
         )
-        
+
         self.old_char_var = tk.StringVar(value="")
         self.old_char_combo = ttk.Combobox(replace_row, textvariable=self.old_char_var, width=11)
         self.old_char_combo.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 2))
         self.old_char_combo.config(state="disabled")  # Initially disabled
-        
+
         # Third row for new char
         char_mgmt_row = ttk.Frame(char_mgmt_frame)
         char_mgmt_row.pack(fill=tk.X, pady=(2, 1))
-        
+
         ttk.Label(char_mgmt_row, text="New Char:", width=17, anchor="e").pack(
             side=tk.LEFT, padx=(0, 2)
         )
-        
+
         self.char_mgmt_var = tk.StringVar(value="")
         self.char_mgmt_entry = ttk.Entry(char_mgmt_row, textvariable=self.char_mgmt_var, width=8)
         self.char_mgmt_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 2))
-        
+
         # Fourth row for apply button
         ttk.Button(char_mgmt_frame, text="Apply", command=self.apply_char_action, padding=2).pack(
             fill=tk.X, padx=2, pady=2
         )
 
         help_frame = ttk.LabelFrame(right, text="Help / Info")
-        help_frame.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
-        
+        help_frame.pack(fill=tk.BOTH, expand=True, padx=(0, 4), pady=4)
+
         # Create scrollable text widget for help
         help_scrollbar = ttk.Scrollbar(help_frame)
         help_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        
+
         help_text = tk.Text(help_frame, wrap=tk.WORD, width=30, height=10,
                             yscrollcommand=help_scrollbar.set,
                             font=self.ui_font, state=tk.DISABLED,
@@ -722,51 +849,27 @@ class GlyphEditorApp:
                             insertbackground=self.colors["fg"])
         help_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         help_scrollbar.config(command=help_text.yview)
-        
+
         help_content = (
-            "LMB on glyph on texture - select.\n\n"
-            "Drag corner handle - resize rectangle.\n"
-            "Drag glyph - move rectangle.\n\n"
-            "You can also manually enter Start/End\n"
-            "X/Y (in texture pixels) and click\n"
-            "'Apply Changes'.\n\n"
-            "Action selector: choose operation then,\n"
-            "fill relevant fields and Apply.\n\n"
-            "Old Char / New Char accept one BMP\n"
-            "character or U+XXXX.\n\n"
-            "add: maps New Char to the selected\n"
-            "glyph (in addition to any existing\n"
-            "characters). Duplicate codes are\n"
-            "rejected.\n"
-            "remove: deletes the character chosen\n"
-            "in Old Char from the selected glyph.\n"
-            "replace: reassigns the character chosen\n"
-            "in Old Char to point to New Char instead.\n"
-            "clear_glyph: clears the whole selected\n"
-            "glyph. Clears every charmap entry\n"
-            "pointing to it (like an empty slot) and\n"
-            "zeroes the glyph's own data. Asks for\n"
-            "confirmation first; cannot be undone\n"
-            "once saved.\n\n"
-            "VERIFIED IN-GAME (via XEMU):\n"
-            "- Glyph Width/Height: physical glyph\n"
-            "  size. Changing these visibly stretches/\n"
-            "  squashes the glyph on screen along\n"
-            "  X/Y. Stored as TWO independent\n"
-            "  bytes, not one number.\n"
-            "- Advance Width: horizontal step after\n"
-            "  this character - where the next one\n"
-            "  starts.\n"
-            "- X/Y Bearing: offset of the glyph from\n"
-            "  the baseline. Negative X = left,\n"
-            "  positive X = right. Positive Y = lower,\n"
-            "  negative Y = higher. Shown/entered\n"
-            "  as SIGNED bytes (-128..127).\n\n"
-            "Pixel-conversion formula (both X and Y)\n"
-            "found empirically."
+            "**LMB** on glyph on texture - select.\n\n"
+            "**Drag corner handle** - resize rectangle.\n"
+            "**Drag glyph** - move rectangle.\n\n"
+            "You can also manually enter Start/End X/Y (in texture pixels) and click **'Apply Changes'**.\n\n"
+            "**Action selector:** choose operation then, fill relevant fields and Apply.\n\n"
+            "**Old Char / New Char** accept one BMP character or U+XXXX.\n\n"
+            "**add:** maps New Char to the selected glyph (in addition to any existing characters). Duplicate codes are rejected.\n"
+            "**remove:** deletes the character chosen in Old Char from the selected glyph.\n"
+            "**replace:** reassigns the character chosen in Old Char to point to New Char instead.\n"
+            "**clear_glyph:** clears the whole selected glyph. Clears every charmap entry pointing to it (like an empty slot) and zeroes the glyph's own data. Asks for confirmation first; cannot be undone once saved.\n\n"
+            "**VERIFIED IN-GAME (via XEMU):**\n"
+            "**Glyph Width/Height:** physical glyph size. Changing these visibly stretches/quashes the glyph on screen along X/Y. Stored as **TWO** independent bytes, not one number.\n"
+            "**Advance Width:** horizontal step after this character - where the next one starts.\n"
+            "**X/Y Bearing:** offset of the glyph from the baseline. Negative X = left, positive X = right. Positive Y = lower, negative Y = higher. Shown/entered as **SIGNED** bytes (-128..127).\n\n"
+            "Pixel-conversion formula (both X and Y) found empirically."
         )
+        help_text.tag_configure("bold", font=self.bold_font)
         help_text.config(state=tk.NORMAL)
-        help_text.insert(tk.END, help_content)
+        self._insert_marked_text(help_text, help_content)
         help_text.config(state=tk.DISABLED)
 
     # ------------------------------------------------------------- actions
@@ -800,24 +903,6 @@ class GlyphEditorApp:
             return self.save_overwrite()
         return True             # No: discard changes
 
-    def _set_window_icon(self, icon_path):
-        """Set the window icon. .ico via iconbitmap works on Windows only; on
-        Linux/macOS Tk raises TclError for .ico, so fall back to iconphoto (via PIL).
-        A missing/broken icon must never prevent the app from starting."""
-        try:
-            if sys.platform.startswith("win"):
-                self.root.iconbitmap(icon_path)
-                return
-        except tk.TclError:
-            pass
-        try:
-            with Image.open(icon_path) as ico:
-                ico.load()
-                self._icon_photo = ImageTk.PhotoImage(ico.convert("RGBA"))  # keep a reference
-            self.root.iconphoto(True, self._icon_photo)
-        except Exception:
-            pass
-
     def on_closing(self):
         if self._confirm_discard_or_save():
             self.root.destroy()
@@ -827,107 +912,117 @@ class GlyphEditorApp:
             title="Open default.bin",
             filetypes=[("BIN files", "*.bin *.BIN"), ("All files", "*")],
         )
-        if not path:
-            return
-        if not self._confirm_discard_or_save():
-            return
+        if path and self._confirm_discard_or_save():
+            self.load_bin(path)
+
+    def load_bin(self, path):
+        """Load a .bin into the editor. Returns True on success; failures are
+        reported to the user and leave the current font untouched."""
         try:
-            self.font = ConkerFont(path, profile_name=None)  # Auto-detect profile
-            # Update profile dropdown to match detected profile
-            self.profile_var.set(self.font.profile_name)
+            font = ConkerFont(path, profile_name=None)  # auto-detect the profile
         except EXPECTED_LOAD_ERRORS as e:
             messagebox.showerror("Loading Error", str(e))
-            return
+            return False
         except Exception as e:
             self._report_unexpected_error("Critical Loading Error", e)
-            return
-        
-        # Check if opening the same file
-        same_file = (self.current_file_path == path)
+            return False
+
+        keep_selection = (self.current_file_path == path
+                          and self.selected_index is not None
+                          and self.selected_index < len(font.glyphs))
+        self.font = font
+        self.profile_var.set(font.profile_name)
         self.current_file_path = path
-        
         self.unsaved_changes = False
-        
-        if same_file and self.selected_index is not None and self.selected_index < len(self.font.glyphs):
-            # Keep the selection if it's still valid
-            saved_index = self.selected_index
-        else:
-            # Reset selection for new file or invalid index
+
+        if not keep_selection:
             self.selected_index = None
             self.selected_code = None
-            saved_index = None
-            # Clear property fields
             for var in self.prop_vars.values():
                 var.set("")
-        
+
         self._refresh_glyph_list()
-        
-        # Restore UI state if keeping selection
-        if saved_index is not None:
-            self.select_glyph(saved_index)
-        
-        self._redraw_canvas()
+        if keep_selection:
+            self.select_glyph(self.selected_index)   # also redraws the canvas
+        else:
+            self._redraw_canvas()
+        how = "auto-detected" if font.profile_autodetected else "not detected, default used"
         self.status_var.set(
-            f"Loaded {os.path.basename(path)}: {self.font.glyph_count} glyphs, "
-            f"profile {self.profile_var.get()} (auto-detected)"
+            f"Loaded {os.path.basename(path)}: {font.glyph_count} glyphs, "
+            f"profile {font.profile_name} ({how})"
         )
+        return True
 
     def open_texture(self):
         path = filedialog.askopenfilename(
             title="Open Texture",
             filetypes=[("Images", "*.png *.PNG *.bmp *.BMP"), ("All files", "*")],
         )
-        if not path:
-            return
+        if path:
+            self.load_texture(path)
+
+    def load_texture(self, path):
+        """Load a texture image. Returns True on success; failures are reported."""
         try:
-            img = Image.open(path)
-            # Validate image format
-            if img.format not in ("PNG", "BMP"):
-                messagebox.showwarning(
-                    "Texture Format Warning",
-                    f"Image format '{img.format}' may not be supported. PNG or BMP recommended."
-                )
-            # Validate image dimensions
-            if img.width < 1 or img.height < 1:
-                raise ValueError("Image must have positive dimensions")
-            if img.width > 1024 or img.height > 1024:
-                messagebox.showwarning(
-                    "Texture Size Warning",
-                    f"Image dimensions ({img.width}x{img.height}) are very large. This may cause performance issues."
-                )
-            self.tex_image = img.convert("RGB")
+            with Image.open(path) as img:
+                if img.format not in ("PNG", "BMP"):
+                    messagebox.showwarning(
+                        "Texture Format Warning",
+                        f"Image format '{img.format}' may not be supported. PNG or BMP recommended."
+                    )
+                if img.width > 1024 or img.height > 1024:
+                    messagebox.showwarning(
+                        "Texture Size Warning",
+                        f"Image dimensions ({img.width}x{img.height}) are very large. This may cause performance issues."
+                    )
+                tex_image = img.convert("RGB")
         except EXPECTED_LOAD_ERRORS as e:
             messagebox.showerror("Texture Loading Error", str(e))
-            return
+            return False
         except Exception as e:
             self._report_unexpected_error("Critical Texture Loading Error", e)
-            return
+            return False
+        self.tex_image = tex_image
+        self._tex_photo_zoom = None      # force the scaled copy to be rebuilt
         self._redraw_canvas()
         self.status_var.set(
-            f"Texture loaded: {os.path.basename(path)} ({self.tex_image.width}x{self.tex_image.height})"
+            f"Texture loaded: {os.path.basename(path)} ({tex_image.width}x{tex_image.height})"
         )
+        return True
+
+    def load_paths(self, bin_path, tex_path=None):
+        """Load files given on the command line (missing paths are reported)."""
+        for path, loader in ((bin_path, self.load_bin), (tex_path, self.load_texture)):
+            if path is None:
+                continue
+            if os.path.exists(path):
+                loader(path)
+            else:
+                self.status_var.set(f"File not found: {path}")
 
     def on_profile_changed(self):
-        if self.font is not None:
-            self.font.profile_name = self.profile_var.get()
-            self.font.profile = FONT_PROFILES[self.profile_var.get()]
-            # Check if selected_index is still valid after profile change
-            if self.selected_index is not None and self.selected_index >= len(self.font.glyphs):
-                self.selected_index = None
-                self.selected_code = None
-                # Clear selection in listbox
-                self.glyph_listbox.selection_clear(0, tk.END)
-                # Clear property fields
-                for var in self.prop_vars.values():
-                    var.set("")
+        if self.font is None:
+            return
+        name = self.profile_var.get()
+        self.font.profile_name = name
+        self.font.profile = FONT_PROFILES[name]
+        # The pixel fields and every rectangle depend on the profile: rebuild them,
+        # otherwise "Apply Changes" would mix old-profile pixels with the new profile.
+        if self.selected_index is not None:
+            self.select_glyph(self.selected_index, preferred_code=self.selected_code)
+        else:
             self._redraw_canvas()
 
     def on_zoom_changed(self):
-        new_zoom = max(1, int(self.zoom_var.get()))
-        if new_zoom == self.zoom:
-            return  # No change, skip redraw
-        self.zoom = new_zoom
-        self._redraw_canvas()
+        try:
+            value = int(self.zoom_var.get())
+        except (tk.TclError, ValueError):       # empty / non-numeric text in the box
+            value = self.zoom
+        new_zoom = max(MIN_ZOOM, min(MAX_ZOOM, value))
+        self.zoom_var.set(new_zoom)
+        if new_zoom != self.zoom:
+            self.zoom = new_zoom
+            self._redraw_canvas()
 
     def save_as(self):
         if self.font is None:
@@ -945,6 +1040,8 @@ class GlyphEditorApp:
         except OSError as e:
             messagebox.showerror("Save Error", str(e))
             return False
+        self.font.path = path               # later "Save (overwrite)" targets this file
+        self.current_file_path = path
         self.unsaved_changes = False
         self.status_var.set(f"Saved: {path}")
         return True
@@ -1040,7 +1137,7 @@ class GlyphEditorApp:
 
         # Assigned charmap entries, sorted by code point for readability.
         for code, glyph_index in sorted(self.font.charmap.items()):
-            char_disp = chr(code) if code >= 0x20 else "·"
+            char_disp = self._char_display(code, fallback="·")
             rows.append(f"U+{code:04X}  {char_disp}   -> glyph #{glyph_index}")
             self._charmap_row_data.append((glyph_index, code))
 
@@ -1095,21 +1192,17 @@ class GlyphEditorApp:
     @staticmethod
     def _parse_character(value):
         """Parse one BMP character or a U+XXXX / 0xXXXX code-point literal."""
+        error = "Character must be one symbol or U+XXXX"
         text = value.strip()
-        if text.upper().startswith("U+"):
+        if text[:2].upper() in ("U+", "0X"):
             try:
                 code = int(text[2:], 16)
             except ValueError as e:
-                raise ValueError("Character must be one symbol or U+XXXX") from e
-        elif text.lower().startswith("0x"):
-            try:
-                code = int(text[2:], 16)
-            except ValueError as e:
-                raise ValueError("Character must be one symbol or U+XXXX") from e
+                raise ValueError(error) from e
         else:
             # Do not strip this path: a literal space is a valid character.
             if len(value) != 1:
-                raise ValueError("Character must be one symbol or U+XXXX")
+                raise ValueError(error)
             code = ord(value)
 
         if not (0 <= code < 0xFFFF):
@@ -1122,8 +1215,7 @@ class GlyphEditorApp:
         self.selected_index = index
         g = self.font.glyphs[index]
 
-        glyph_codes = [code for code, mapped_index in self.font.charmap.items()
-                       if mapped_index == index]
+        glyph_codes = self.font.codes_for_glyph(index)
         if preferred_code not in glyph_codes:
             preferred_code = ord(g.char) if g.char else None
         if preferred_code in glyph_codes:
@@ -1170,7 +1262,7 @@ class GlyphEditorApp:
 
         self._redraw_canvas()
 
-        # Synchronize listbox selection immediately for glyph listbox (as in old version)
+        # Keep the glyph list selection in sync
         self.glyph_listbox.selection_clear(0, tk.END)
         self.glyph_listbox.selection_set(index)
         self.glyph_listbox.see(index)
@@ -1199,20 +1291,18 @@ class GlyphEditorApp:
     def apply_property_edits(self):
         if self.font is None or self.selected_index is None:
             return
-        g = self.font.glyphs[self.selected_index].clone()
+        orig = self.font.glyphs[self.selected_index]
+        g = orig.clone()
         try:
             # field1_lo and field1_hi are treated as two INDEPENDENT single bytes,
             # entered/displayed as SIGNED int8 (-128..127) - see select_glyph for why.
-            f1_lo_signed = int(self.prop_vars["field1_lo"].get())
-            f1_hi_signed = int(self.prop_vars["field1_hi"].get())
-            f1_lo = self._signed_to_byte(f1_lo_signed)
-            f1_hi = self._signed_to_byte(f1_hi_signed)
+            f1_lo = self._signed_to_byte(int(self.prop_vars["field1_lo"].get()))
+            f1_hi = self._signed_to_byte(int(self.prop_vars["field1_hi"].get()))
             g.field1 = (f1_hi << 8) | f1_lo
 
-            # field2_lo and field2_hi are treated as two INDEPENDENT single bytes
-            # (not as one combined 16-bit number - see select_glyph for why), so each
-            # is validated and packed separately.
-            # User enters values with -1 offset, so we add 1 back when storing.
+            # field2_lo and field2_hi are likewise INDEPENDENT single bytes, each
+            # validated and packed separately. The user enters them with a -1
+            # offset, so 1 is added back when storing.
             f2_lo = int(self.prop_vars["field2_lo"].get()) + 1
             f2_hi = int(self.prop_vars["field2_hi"].get()) + 1
             if not (0 <= f2_lo <= 255):
@@ -1225,38 +1315,34 @@ class GlyphEditorApp:
             if not (0 <= byte14_val <= 255):
                 raise ValueError("Advance Width must be an integer between 0 and 255 (it's a single byte in the file)")
             g.byte14 = byte14_val
+
             if not g.is_special:
-                x0 = float(self.prop_vars["x0"].get())
-                y0 = float(self.prop_vars["y0"].get())
-                x1 = float(self.prop_vars["x1"].get())
-                y1 = float(self.prop_vars["y1"].get())
-                self.font.set_pixels(g, x0, y0, x1, y1)
+                rect = tuple(float(self.prop_vars[k].get()) for k in ("x0", "y0", "x1", "y1"))
+                # raw -> pixels -> raw is lossy: rewrite the rectangle only if it was edited
+                if rect != self.font.to_pixels(orig):
+                    self.font.set_pixels(g, *rect)
         except ValueError as e:
             messagebox.showerror("Invalid Input", str(e))
             return
 
-        self.font.write_glyph(g)
-        self.unsaved_changes = True
-        self._refresh_glyph_list()
-        self.select_glyph(self.selected_index, preferred_code=self.selected_code)
-        self.status_var.set(f"Glyph #{g.index} updated (changes not saved to disk)")
+        if g.same_data(orig):
+            self.status_var.set(f"Glyph #{g.index}: no changes")
+            return
+        self._commit_glyph_edit(g)
 
     def _update_old_char_combo(self):
         """Update the old char combo with current glyph's characters."""
-        if self.selected_index is not None and self.font is not None:
-            glyph_codes = [c for c, idx in self.font.charmap.items() if idx == self.selected_index]
-            if glyph_codes:
-                # Create display values: character + U+XXXX for clarity
-                char_values = []
-                for code in sorted(glyph_codes):
-                    char_display = chr(code) if code >= 0x20 else f"U+{code:04X}"
-                    char_values.append(f"{char_display} (U+{code:04X})")
-                self.old_char_combo['values'] = char_values
-                if char_values:
-                    self.old_char_combo.current(0)
-            else:
-                self.old_char_combo['values'] = []
-                self.old_char_var.set("")
+        if self.selected_index is None or self.font is None:
+            return
+        glyph_codes = self.font.codes_for_glyph(self.selected_index)
+        if glyph_codes:
+            self.old_char_combo['values'] = [
+                f"{self._char_display(code)} (U+{code:04X})" for code in glyph_codes
+            ]
+            self.old_char_combo.current(0)
+        else:
+            self.old_char_combo['values'] = []
+            self.old_char_var.set("")
 
     def on_char_action_changed(self, event):
         """Enable/disable old/new char fields based on selected action."""
@@ -1308,69 +1394,47 @@ class GlyphEditorApp:
     def apply_char_action(self):
         if self.font is None or self.selected_index is None:
             return
-        
+
         action = self.char_action_var.get()
+        glyph_index = self.selected_index
+        glyph_codes = self.font.codes_for_glyph(glyph_index)
+        status = None
         try:
             if action == "add":
                 code = self._parse_character(self.char_mgmt_var.get())
-                self.font.add_glyph_character_alias(self.selected_index, code)
-                char_display = chr(code) if code >= 0x20 else f"U+{code:04X}"
+                self.font.add_glyph_character_alias(glyph_index, code)
                 messagebox.showinfo(
                     "Character Added",
-                    f"Character '{char_display}' (U+{code:04X}) successfully added to glyph #{self.selected_index}"
+                    f"Character '{self._char_display(code)}' (U+{code:04X}) "
+                    f"successfully added to glyph #{glyph_index}"
                 )
-                self.status_var.set(
-                    f"U+{code:04X} added to glyph #{self.selected_index} "
-                    "(changes not saved to disk)"
-                )
+                status = f"U+{code:04X} added to glyph #{glyph_index}"
             elif action == "remove":
-                # Determine which character to remove from the 'Old Char' selector
-                glyph_codes = [c for c, idx in self.font.charmap.items() if idx == self.selected_index]
                 if not glyph_codes:
                     raise ValueError("Glyph has no characters to remove.")
-
                 code = self._resolve_old_code(glyph_codes)
-
-                self.font.remove_glyph_character_alias(self.selected_index, code)
-                char_display = chr(code) if code >= 0x20 else f"U+{code:04X}"
+                self.font.remove_glyph_character_alias(glyph_index, code)
                 messagebox.showinfo(
                     "Character Removed",
-                    f"Character '{char_display}' (U+{code:04X}) successfully removed from glyph #{self.selected_index}"
+                    f"Character '{self._char_display(code)}' (U+{code:04X}) "
+                    f"successfully removed from glyph #{glyph_index}"
                 )
-                self.status_var.set(
-                    f"U+{code:04X} removed from glyph #{self.selected_index} "
-                    "(changes not saved to disk)"
-                )
+                status = f"U+{code:04X} removed from glyph #{glyph_index}"
             elif action == "replace":
                 code = self._parse_character(self.char_mgmt_var.get())
-
-                # Replace a specific character with the new one
-                glyph_codes = [c for c, idx in self.font.charmap.items() if idx == self.selected_index]
                 if not glyph_codes:
                     raise ValueError("Glyph has no characters to replace. Use 'add' to add a character first.")
-
                 old_code = self._resolve_old_code(glyph_codes)
-
-                self.font.remap_glyph_character(self.selected_index, old_code, code)
-                
-                old_display = chr(old_code) if old_code >= 0x20 else f"U+{old_code:04X}"
-                new_display = chr(code) if code >= 0x20 else f"U+{code:04X}"
+                self.font.remap_glyph_character(glyph_index, old_code, code)
                 messagebox.showinfo(
                     "Character Replaced",
-                    f"Character '{old_display}' (U+{old_code:04X}) replaced with '{new_display}' (U+{code:04X}) in glyph #{self.selected_index}"
+                    f"Character '{self._char_display(old_code)}' (U+{old_code:04X}) replaced with "
+                    f"'{self._char_display(code)}' (U+{code:04X}) in glyph #{glyph_index}"
                 )
-                self.status_var.set(
-                    f"U+{old_code:04X} replaced with U+{code:04X} in glyph #{self.selected_index} "
-                    "(changes not saved to disk)"
-                )
-                
+                status = f"U+{old_code:04X} replaced with U+{code:04X} in glyph #{glyph_index}"
             elif action == "clear_glyph":
-                glyph_index = self.selected_index
-                glyph_codes = sorted(c for c, idx in self.font.charmap.items() if idx == glyph_index)
-                chars_display = ", ".join(
-                    chr(c) if c >= 0x20 else f"U+{c:04X}" for c in glyph_codes
-                ) if glyph_codes else "(no character mapped)"
-
+                chars_display = (", ".join(self._char_display(c) for c in glyph_codes)
+                                 if glyph_codes else "(no character mapped)")
                 confirmed = messagebox.askyesno(
                     "Clear Glyph",
                     f"Clear glyph #{glyph_index} ({chars_display})?\n\n"
@@ -1382,33 +1446,27 @@ class GlyphEditorApp:
                 )
                 if not confirmed:
                     return
-
                 self.font.clear_glyph(glyph_index)
-                messagebox.showinfo(
-                    "Glyph Cleared",
-                    f"Glyph #{glyph_index} successfully cleared."
-                )
-                self.status_var.set(
-                    f"Glyph #{glyph_index} cleared (changes not saved to disk)"
-                )
-
+                messagebox.showinfo("Glyph Cleared", f"Glyph #{glyph_index} successfully cleared.")
+                status = f"Glyph #{glyph_index} cleared"
         except ValueError as e:
             messagebox.showerror("Invalid Character", str(e))
             return
+        if status is None:
+            return
 
-        self.unsaved_changes = True
+        self._mark_modified(status)
         self.char_mgmt_var.set("")
         self._refresh_glyph_list()
-        
-        # Update selected_code based on action
+
         if action in ("remove", "clear_glyph"):
-            glyph_codes = [c for c, idx in self.font.charmap.items() if idx == self.selected_index]
-            if self.selected_code not in glyph_codes:
-                self.selected_code = glyph_codes[0] if glyph_codes else None
+            remaining = self.font.codes_for_glyph(glyph_index)
+            if self.selected_code not in remaining:
+                self.selected_code = remaining[0] if remaining else None
         elif action == "replace":
             self.selected_code = code
-        
-        self.select_glyph(self.selected_index, preferred_code=self.selected_code)
+
+        self.select_glyph(glyph_index, preferred_code=self.selected_code)
 
     # ------------------------------------------------------------- canvas
 
@@ -1419,8 +1477,10 @@ class GlyphEditorApp:
 
         z = self.zoom
         w, h = self.tex_image.width, self.tex_image.height
-        disp = self.tex_image.resize((w * z, h * z), Image.NEAREST)
-        self.tex_photo = ImageTk.PhotoImage(disp)
+        if self._tex_photo_zoom != z:      # rescale only when zoom or texture changed
+            disp = self.tex_image.resize((w * z, h * z), Image.NEAREST)
+            self.tex_photo = ImageTk.PhotoImage(disp)
+            self._tex_photo_zoom = z
         self.canvas.create_image(0, 0, anchor="nw", image=self.tex_photo)
         self.canvas.config(scrollregion=(0, 0, w * z, h * z))
 
@@ -1450,13 +1510,13 @@ class GlyphEditorApp:
         z = self.zoom
         self.canvas.delete(f"glyph_{self.selected_index}")
         self.canvas.delete("handle")
-        
+
         # Draw selected glyph rectangle
         self.canvas.create_rectangle(
             x0 * z, y0 * z, x1 * z, y1 * z,
             outline="#00e0ff", width=2, tags=(f"glyph_{self.selected_index}",)
         )
-        
+
         # Draw handles
         self._draw_handles(x0, y0, x1, y1, z)
 
@@ -1552,19 +1612,14 @@ class GlyphEditorApp:
         elif self.drag_mode == "x1y1":
             x1, y1 = x1 + dx, y1 + dy
 
-        # Clamp coordinates to texture bounds. The right/bottom edge is
-        # allowed to hang 1px past the texture (per user request): raw
-        # values there just get slightly larger, no format conflict. The
-        # left/top edge stays hard-clamped at 0: going negative would wrap
-        # around as a huge uint16 raw value on save, landing in the same
-        # range the format already reserves for is_special (no-rectangle)
-        # glyphs and silently turning the glyph into a blank one.
-        if self.tex_image:
-            tex_w, tex_h = self.tex_image.width, self.tex_image.height
-            x0 = max(0, min(x0, tex_w))
-            x1 = max(0, min(x1, tex_w))
-            y0 = max(0, min(y0, tex_h))
-            y1 = max(0, min(y1, tex_h))
+        # Clamp to the texture. Left/top are always clamped at 0 (a negative value
+        # cannot be stored as a raw uint16 coordinate); without a texture there is
+        # no right/bottom limit and the range check in set_from_pixels() applies.
+        tex_w, tex_h = self.tex_image.size if self.tex_image else (float("inf"), float("inf"))
+        x0 = max(0, min(x0, tex_w))
+        x1 = max(0, min(x1, tex_w))
+        y0 = max(0, min(y0, tex_h))
+        y1 = max(0, min(y1, tex_h))
 
         # In move mode, preserve original dimensions after clamping
         if self.drag_mode == "move":
@@ -1603,19 +1658,22 @@ class GlyphEditorApp:
 
     def on_canvas_release(self, event):
         if self.drag_mode:
-            x0_rounded, y0_rounded, x1_rounded, y1_rounded = self._compute_dragged_rect(event)
-
-            g = self.font.glyphs[self.selected_index].clone()
-            self.font.set_pixels(g, x0_rounded, y0_rounded, x1_rounded, y1_rounded)
-            self.font.write_glyph(g)
-            self.unsaved_changes = True
-
-            self._refresh_glyph_list()
-            self.select_glyph(self.selected_index)
-            self.status_var.set(f"Glyph #{self.selected_index} updated (not saved to disk)")
-            
-            # Redraw all glyphs after release to show full context
-            self._redraw_canvas()
+            rect = self._compute_dragged_rect(event)
+            new_glyph = None
+            if rect != self.drag_orig_rect:
+                candidate = self.font.glyphs[self.selected_index].clone()
+                try:
+                    self.font.set_pixels(candidate, *rect)
+                    new_glyph = candidate
+                except ValueError as e:
+                    messagebox.showerror("Invalid Rectangle", str(e))
+            if new_glyph is not None:
+                # Only the rectangle changed: the glyph list rows stay valid.
+                self._commit_glyph_edit(new_glyph, refresh_list=False)
+            else:
+                # Plain click, drag back to the start, or rejected: write nothing and
+                # restore the fields/canvas the live drag preview changed.
+                self.select_glyph(self.selected_index, preferred_code=self.selected_code)
         self.drag_mode = None
         self.drag_start = None
         self.drag_orig_rect = None
@@ -1624,30 +1682,8 @@ class GlyphEditorApp:
 def main():
     root = tk.Tk()
     app = GlyphEditorApp(root)
-
-    # Open immediately if paths are passed via CLI arguments
-    if len(sys.argv) >= 2:
-        bin_path = sys.argv[1]
-        if os.path.exists(bin_path):            
-            app.font = ConkerFont(bin_path, profile_name=None)
-            app.profile_var.set(app.font.profile_name)
-            app._refresh_glyph_list()
-    if len(sys.argv) >= 3:
-        tex_path = sys.argv[2]
-        if os.path.exists(tex_path):
-            try:
-                img = Image.open(tex_path)
-                if img.format not in ("PNG", "BMP"):
-                    print(f"Warning: Image format '{img.format}' may not be supported. PNG or BMP recommended.")
-                if img.width < 1 or img.height < 1:
-                    raise ValueError("Image must have positive dimensions")
-                app.tex_image = img.convert("RGB")
-            except Exception as e:
-                print(f"Error loading texture: {e}")
-                app.tex_image = None
-    if len(sys.argv) >= 2:
-        app._redraw_canvas()
-
+    if len(sys.argv) >= 2:          # optional: <default.bin> [texture]
+        root.after_idle(app.load_paths, *sys.argv[1:3])
     root.mainloop()
 
 
