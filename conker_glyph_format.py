@@ -2,8 +2,18 @@
 conker_glyph_format.py - reader/patcher for the glyph table and character map of
 Conker: Live & Reloaded CAFF font files (default.bin).
 
-Edits are applied in place to the in-memory file image; everything outside the
-touched records stays byte-identical.
+Field edits are applied in place to the in-memory file image; everything outside
+the touched records stays byte-identical.
+
+Deleting a glyph never changes the file layout: the records behind it move down
+inside the glyph array, the glyph count drops and the freed bytes stay as a gap in
+front of the charmap (which the font object reaches through a pointer, so it does
+not have to follow the array directly).  Adding a glyph reuses such a gap.
+
+Growing the glyph array (moving the charmap and everything behind it, and fixing
+the counts/pointers/sizes that were found) was tried and the game refused the
+resulting file, for a reason that could not be found in the file - so it is not
+supported: the font can hold at most as many glyphs as the original file.
 """
 
 import math
@@ -12,18 +22,31 @@ import shutil
 import struct
 import tempfile
 
-GLYPH_TABLE_OFFSET = 0x506
+# The glyph array is a plain array of 18-byte records (see Glyph for the layout).
+# Its base is what the font object's array pointer (at 0x4F0) targets.
+GLYPH_TABLE_OFFSET = 0x508
 GLYPH_REC_SIZE = 18
 GLYPH_COUNT_HEADER_OFFSET = 0x4d4
 
-# The glyph table is followed by one uint16 sentinel, then a fixed-size open
-# addressing table of (uint16 Unicode code point, uint16 glyph index) pairs.
-CHARMAP_LEADING_SENTINEL_SIZE = 2
+# The glyph array is followed immediately by a fixed-size open addressing table
+# of (uint16 Unicode code point, uint16 glyph index) pairs.
 CHARMAP_SLOT_COUNT = 0x800
 CHARMAP_SLOT_SIZE = 4
 CHARMAP_SIZE = CHARMAP_SLOT_COUNT * CHARMAP_SLOT_SIZE
 
-SENTINEL = 0xFFFF  # "No rectangle" marker (space, system glyphs)
+SENTINEL = 0xFFFF  # empty charmap slot / reserved value
+MAX_GLYPHS = SENTINEL - 1   # glyph indices are uint16 in the charmap; 0xFFFF is reserved
+
+# --- Container layout (the little that is needed) ------------------------------
+SECTION_DATA_OFFSET_FIELD = 0x38   # CAFF header: file offset of the .data section
+# Font object inside .data (pointers are relative to the start of .data):
+CHARMAP_PTR_FIELD = 0x4C4          # -> charmap; it does not have to follow the array
+
+# The font object also stores one Unicode code point here (U+25A1, the white
+# square, in ConkerFont - the glyph that is last in the array).  Its purpose is not
+# known; it may be the character shown for unknown symbols, so the editor warns
+# before the glyph for it is removed.
+HEADER_CODE_FIELD = 0x4D8
 
 # Glyph rectangle coordinates (x0/x1/y0/y1_raw) are uint16 values in a
 # 0..16384 space: raw = (pixel - offset) * 16384 / texture_size (see
@@ -91,6 +114,13 @@ def detect_profile(data):
             actual_bytes = data[offset:offset + len(expected_bytes)]
             if actual_bytes == expected_bytes:
                 return profile_name
+    # The fixed offsets above only hold for files as shipped: adding or deleting
+    # glyphs moves the metadata block. The font's source path inside it still names
+    # the font as ".../<name>/...", so look for that (the slashes keep
+    # "ConkerFont" apart from "ConkerFontJapanese").
+    for profile_name in _PROFILE_SIGNATURES:
+        if data.find(b"/" + profile_name.encode("ascii") + b"/") >= 0:
+            return profile_name
     return None
 
 
@@ -107,6 +137,10 @@ def _code_plausibility(code):
     if 0x3040 <= code < 0xA000: return 1          # Hiragana/Katakana/CJK
     if 0xFF00 <= code < 0xFFF0: return 1          # fullwidth forms
     return 2                                        # anything else: least preferred
+
+
+# field1 field2 x0 x1 y0 y1 byte14 byte15 reserved(0xFFFF) unknown_field
+_GLYPH_REC_FORMAT = "<HHHHHHBBHH"
 
 
 class Glyph:
@@ -160,6 +194,18 @@ class Glyph:
                       |                  | was originally assumed to do. Unsigned.
     --------------------------------------------------------------------------------
     byte15            | -                | Always observed as 0x00; purpose unknown.
+
+    Record layout (18 bytes): field1, field2, x0, x1, y0, y1 (uint16 each),
+    byte14, byte15 (uint8 each), 0xFFFF (reserved - constant in every shipped
+    glyph), unknown_field (uint16).  unknown_field is the LAST two bytes of its
+    own record.  Earlier versions of this tool read it from the two bytes in
+    front of the record, i.e. every glyph showed its predecessor's value and the
+    last glyph's value was mistaken for a table "sentinel".  Evidence for the
+    current reading: the font object's array pointer targets the array start
+    (0x508) and the array then ends exactly where the charmap begins; and the
+    value tracks the glyph's own height (equal to the Glyph Height byte for two
+    thirds of ConkerFont's glyphs; 14 for the 14px-high U+25A1 square that used
+    to be the "sentinel").
 
     x0_raw..y1_raw use the FONT_PROFILES pixel-conversion formula (raw / DIV +
     OFFSET). field1/field2 are stored as one uint16 each in the file but behave
@@ -240,6 +286,10 @@ class Glyph:
         return all(getattr(self, slot) == getattr(other, slot) for slot in self.__slots__)
 
 
+class NoFreeSlotError(ValueError):
+    """The glyph table has no free slot (the table cannot be enlarged)."""
+
+
 class ConkerFont:
     """Loads default.bin fully into memory, provides access to glyphs, and allows
     writing changes back (in-place patch, leaving the rest of the file completely intact)."""
@@ -265,15 +315,16 @@ class ConkerFont:
         self.profile = FONT_PROFILES[profile_name]
         self.profile_autodetected = detected is not None
 
-        self.glyph_count = struct.unpack(
-            "<I", self.data[GLYPH_COUNT_HEADER_OFFSET:GLYPH_COUNT_HEADER_OFFSET + 4]
-        )[0]
+        self._reparse()
 
+    # ---------- Reading ----------
+
+    def _reparse(self):
+        """(Re)build glyphs, charmap and display characters from self.data."""
+        self.glyph_count = struct.unpack_from("<I", self.data, GLYPH_COUNT_HEADER_OFFSET)[0]
         self.glyphs = self._read_glyphs()
         self.charmap = self._read_charmap()  # code -> glyph_index
         self._apply_charmap_to_glyphs()
-
-    # ---------- Reading ----------
 
     def _read_glyphs(self):
         table_end = GLYPH_TABLE_OFFSET + self.glyph_count * GLYPH_REC_SIZE
@@ -285,17 +336,10 @@ class ConkerFont:
         glyphs = []
         for i in range(self.glyph_count):
             off = GLYPH_TABLE_OFFSET + i * GLYPH_REC_SIZE
-            rec = self.data[off:off + 16]
             g = Glyph(i)
-            g.unknown_field = struct.unpack("<H", rec[0:2])[0]
-            g.field1 = struct.unpack("<H", rec[2:4])[0]
-            g.field2 = struct.unpack("<H", rec[4:6])[0]
-            g.x0_raw = struct.unpack("<H", rec[6:8])[0]
-            g.x1_raw = struct.unpack("<H", rec[8:10])[0]
-            g.y0_raw = struct.unpack("<H", rec[10:12])[0]
-            g.y1_raw = struct.unpack("<H", rec[12:14])[0]
-            g.byte14 = rec[14]
-            g.byte15 = rec[15]
+            (g.field1, g.field2, g.x0_raw, g.x1_raw, g.y0_raw, g.y1_raw,
+             g.byte14, g.byte15, _reserved, g.unknown_field) = struct.unpack_from(
+                _GLYPH_REC_FORMAT, self.data, off)
             g.is_special = max(
                 g.x0_raw, g.x1_raw, g.y0_raw, g.y1_raw
             ) > SPECIAL_GLYPH_RAW_THRESHOLD
@@ -305,8 +349,7 @@ class ConkerFont:
     def _read_charmap(self):
         """Read the fixed 2048-slot character-to-glyph hash table.
 
-        The table follows the 18-byte glyph records and a single uint16
-        sentinel.  Each little-endian slot is ``(Unicode code point,
+        The table follows the 18-byte glyph records directly.  Each little-endian slot is ``(Unicode code point,
         glyph_index)``; ``FFFF FFFF`` denotes an unused slot.  Entries are
         placed with double hashing, but reading every slot directly avoids
         depending on the probing algorithm or on heuristics about code ranges.
@@ -345,13 +388,33 @@ class ConkerFont:
         self._charmap_offsets = charmap_offsets
         return charmap
 
+    def _array_end(self):
+        """File offset right behind the last glyph record."""
+        return GLYPH_TABLE_OFFSET + self.glyph_count * GLYPH_REC_SIZE
+
     def _charmap_start(self):
-        """Return the byte offset of slot zero in the fixed charmap."""
-        return (
-            GLYPH_TABLE_OFFSET
-            + self.glyph_count * GLYPH_REC_SIZE
-            + CHARMAP_LEADING_SENTINEL_SIZE
-        )
+        """Return the byte offset of slot zero in the fixed charmap.
+
+        Normally this is the end of the glyph array.  After glyphs were deleted
+        the charmap stays where it was and the font object's pointer says so; a
+        pointer that is not a whole number of records behind the array (or leaves
+        the file) is ignored and the charmap is assumed to follow the array.
+        """
+        array_end = self._array_end()
+        start = self._u32(SECTION_DATA_OFFSET_FIELD) + self._u32(CHARMAP_PTR_FIELD)
+        if (start >= array_end and (start - array_end) % GLYPH_REC_SIZE == 0
+                and start + CHARMAP_SIZE <= len(self.data)):
+            return start
+        return array_end
+
+    def free_glyph_slots(self):
+        """How many glyph records fit into the gap in front of the charmap."""
+        return (self._charmap_start() - self._array_end()) // GLYPH_REC_SIZE
+
+    @property
+    def header_code(self):
+        """The code point stored in the font header (see HEADER_CODE_FIELD)."""
+        return self._u32(HEADER_CODE_FIELD)
 
     def codes_for_glyph(self, glyph_index):
         """Sorted list of every Unicode code point mapped to ``glyph_index``."""
@@ -623,61 +686,132 @@ class ConkerFont:
     def clear_glyph(self, glyph_index):
         """Clear a glyph in place: wipe its charmap entries and its record.
 
-        This does not physically delete anything - the glyph table is a
-        fixed array indexed by position, so a glyph can't be removed without
-        shifting every later glyph's index (and every charmap entry that
-        points to one) - too invasive and risky for what is meant to be a
-        simple "clear this slot" operation. Instead:
+        The glyph keeps its index (use delete_glyph to remove the record and
+        renumber the following glyphs):
 
         - Every charmap slot currently mapped to this glyph is cleared to
           the same FFFF FFFF "empty slot" pattern used elsewhere for unused
           charmap entries (see remove_glyph_character_alias).
-        - The glyph's own 16-byte record is zeroed out completely (all
-          fields, including field1/field2/byte14/byte15 and the rectangle),
-          leaving an empty/inert glyph at that index rather than removing
-          the slot itself.
+        - The glyph's own fields (metrics, rectangle, unknown_field) are zeroed,
+          leaving an empty/inert glyph at that index.
 
-        glyph_count and every other glyph's index are left untouched, so
-        nothing else in the file needs to be renumbered.
+        glyph_count and every other glyph's index are left untouched.
         """
         if not (0 <= glyph_index < self.glyph_count):
             raise ValueError(f"glyph index must be between 0 and {self.glyph_count - 1}")
 
-        # Clear every charmap entry pointing at this glyph, the same way
-        # remove_glyph_character_alias clears a single one.
         codes_to_clear = self.codes_for_glyph(glyph_index)
         if codes_to_clear:
             self._remove_charmap_codes(codes_to_clear, glyph_index)
 
-        # Zero out the glyph's own record (all 16 bytes: unknown_field,
-        # field1, field2, the rectangle, byte14, byte15).
-        off = GLYPH_TABLE_OFFSET + glyph_index * GLYPH_REC_SIZE
-        self.data[off:off + 16] = b"\x00" * 16
-
-        g = Glyph(glyph_index)
-        self.glyphs[glyph_index] = g
-
+        self.write_glyph(Glyph(glyph_index))
         self._apply_charmap_to_glyphs()
+
+    # ---------- Adding / deleting glyphs ----------
+
+    def _u32(self, offset):
+        return struct.unpack_from("<I", self.data, offset)[0]
+
+    def _set_glyph_count(self, count):
+        struct.pack_into("<I", self.data, GLYPH_COUNT_HEADER_OFFSET, count)
+
+    def _restore(self, snapshot):
+        self.data = bytearray(snapshot)
+        self._reparse()
+
+    def add_glyph(self, template_index=None, code=None):
+        """Append a new glyph at the end of the glyph array and return its index.
+
+        The new glyph is a copy of glyph ``template_index`` (rectangle and
+        metrics - so it is visible and editable right away) or an empty glyph if
+        that is None.  If ``code`` is given it is mapped to the new glyph.
+
+        The record goes into the free gap left by earlier deletions, so the file
+        layout never changes.  Without a free slot NoFreeSlotError is raised.
+        All-or-nothing: on any error the font is left exactly as it was.
+        """
+        if self.glyph_count >= MAX_GLYPHS:
+            raise ValueError(f"the font already has the maximum of {MAX_GLYPHS} glyphs")
+        if template_index is not None and not (0 <= template_index < self.glyph_count):
+            raise ValueError(f"glyph index must be between 0 and {self.glyph_count - 1}")
+        if code is not None:
+            if not (0 <= code < SENTINEL):
+                raise ValueError("character must be a BMP code point other than U+FFFF")
+            if code in self.charmap:
+                raise ValueError(f"U+{code:04X} is already assigned to glyph #{self.charmap[code]}")
+        if self.free_glyph_slots() <= 0:
+            raise NoFreeSlotError(
+                "The glyph table has no free slot. The table cannot be enlarged (the game "
+                "does not accept a resized file), so a glyph can only be added where one "
+                "was deleted before - delete a glyph you do not need first."
+            )
+
+        new_index = self.glyph_count
+        glyph = Glyph(new_index) if template_index is None else self.glyphs[template_index].clone()
+        glyph.index = new_index
+        glyph.char = ""                            # no character mapped yet
+        snapshot = bytes(self.data)
+        try:
+            end = self._array_end()
+            self.data[end:end + GLYPH_REC_SIZE] = bytes(14) + b"\xff\xff" + bytes(2)   # reserved = FFFF
+            self._set_glyph_count(new_index + 1)
+            self._reparse()
+            self.write_glyph(glyph)
+            if code is not None:
+                self.add_glyph_character_alias(new_index, code)
+        except Exception:
+            self._restore(snapshot)
+            raise
+        return new_index
+
+    def delete_glyph(self, glyph_index):
+        """Remove a glyph without touching the file layout.
+
+        Its characters are unmapped, the glyphs behind it move down by one index
+        (records and charmap entries), and the glyph count drops.  The freed bytes
+        stay as a zeroed gap in front of the charmap, so the file keeps its size
+        and every offset, pointer and size in it stays valid.
+        All-or-nothing: on any error the font is left exactly as it was."""
+        if not (0 <= glyph_index < self.glyph_count):
+            raise ValueError(f"glyph index must be between 0 and {self.glyph_count - 1}")
+        if self.glyph_count <= 1:
+            raise ValueError("cannot delete the last remaining glyph")
+
+        snapshot = bytes(self.data)
+        try:
+            codes = self.codes_for_glyph(glyph_index)
+            if codes:
+                self._remove_charmap_codes(codes, glyph_index)
+            for code, mapped_index in self.charmap.items():
+                if mapped_index > glyph_index:
+                    struct.pack_into("<H", self.data, self._charmap_offsets[code] + 2, mapped_index - 1)
+
+            start = GLYPH_TABLE_OFFSET + glyph_index * GLYPH_REC_SIZE
+            end = self._array_end()
+            self.data[start:end - GLYPH_REC_SIZE] = self.data[start + GLYPH_REC_SIZE:end]
+            self.data[end - GLYPH_REC_SIZE:end] = bytes(GLYPH_REC_SIZE)
+            self._set_glyph_count(self.glyph_count - 1)
+            self._reparse()
+        except Exception:
+            self._restore(snapshot)
+            raise
 
     # ---------- Writing ----------
 
     def write_glyph(self, glyph):
-        """Writes modified Glyph back into self.data (in-memory, not saved to disk yet)."""
+        """Writes modified Glyph back into self.data (in-memory, not saved to disk yet).
+        The reserved 0xFFFF field of the record is left untouched."""
         i = glyph.index
+        if not (0 <= i < len(self.glyphs)):
+            raise ValueError(f"glyph index must be between 0 and {len(self.glyphs) - 1}")
         off = GLYPH_TABLE_OFFSET + i * GLYPH_REC_SIZE
-        rec = struct.pack(
-            "<HHHHHHHBB",
-            glyph.unknown_field,
-            glyph.field1,
-            glyph.field2,
-            glyph.x0_raw,
-            glyph.x1_raw,
-            glyph.y0_raw,
-            glyph.y1_raw,
-            glyph.byte14,
-            glyph.byte15,
+        struct.pack_into(
+            "<HHHHHHBB", self.data, off,
+            glyph.field1, glyph.field2,
+            glyph.x0_raw, glyph.x1_raw, glyph.y0_raw, glyph.y1_raw,
+            glyph.byte14, glyph.byte15,
         )
-        self.data[off:off + 16] = rec
+        struct.pack_into("<H", self.data, off + 16, glyph.unknown_field)
         self.glyphs[i] = glyph
 
     def save(self, out_path=None):
