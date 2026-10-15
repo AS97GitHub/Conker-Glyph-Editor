@@ -884,7 +884,7 @@ class GlyphEditorApp:
             "**remove:** deletes the character chosen in Old Char from the selected glyph.\n"
             "**replace:** reassigns the character chosen in Old Char to point to New Char instead.\n"
             "**clear_glyph:** clears the whole selected glyph but keeps its slot. Clears every charmap entry pointing to it (like an empty slot) and zeroes the glyph's own data. Asks for confirmation first; cannot be undone once saved.\n"
-            "**new_glyph:** appends a new glyph at the end of the glyph table as a copy of the selected one, so it is visible and editable right away. New Char is optional and maps a character to the new glyph. It needs a free slot, which delete_glyph leaves behind: the table cannot be enlarged, so the font holds at most as many glyphs as the original file.\n"
+            "**new_glyph:** appends a new glyph at the end of the glyph table as a copy of the selected one, so it is visible and editable right away. New Char is optional and maps a character to the new glyph. It uses the free slot that delete_glyph leaves behind; without one it offers to grow the file (experimental - keep a backup).\n"
             "**delete_glyph:** removes the selected glyph: its characters are unmapped and every later glyph moves down by one index. The file size and layout stay exactly the same - the freed space is kept as a free slot for new_glyph. Asks for confirmation first; cannot be undone once saved.\n\n"
             "**VERIFIED IN-GAME (via XEMU):**\n"
             "**Glyph Width/Height:** physical glyph size. Changing these visibly stretches/quashes the glyph on screen along X/Y. Stored as **TWO** independent bytes, not one number.\n"
@@ -971,6 +971,14 @@ class GlyphEditorApp:
             self.select_glyph(self.selected_index)   # also redraws the canvas
         else:
             self._redraw_canvas()
+        if not font.checksum_ok:
+            messagebox.showwarning(
+                "Header Checksum Mismatch",
+                "The header checksum of this file does not match its header. The game "
+                "refuses such files (typically ones saved by an earlier version of this "
+                "editor after the glyph table was resized).\n\nIt is corrected "
+                "automatically when you save."
+            )
         how = "auto-detected" if font.profile_autodetected else "not detected, default used"
         self.status_var.set(
             f"Loaded {os.path.basename(path)}: {font.glyph_count} glyphs, "
@@ -1475,7 +1483,20 @@ class GlyphEditorApp:
             elif action == "new_glyph":
                 text = self.char_mgmt_var.get()
                 code = self._parse_character(text) if text else None     # optional
-                new_index = self.font.add_glyph(template_index=glyph_index, code=code)
+                try:
+                    new_index = self.font.add_glyph(template_index=glyph_index, code=code)
+                except NoFreeSlotError as err:
+                    if not messagebox.askyesno(
+                        "Grow the File?",
+                        f"{err}\n\nGrowing the file moves all data behind the glyph table and "
+                        "rewrites the sizes, offsets and the header checksum inside it, the way "
+                        "the original fonts have them. Keep a backup of your file.\n\n"
+                        "Grow the file anyway?",
+                        icon="warning"
+                    ):
+                        return
+                    new_index = self.font.add_glyph(template_index=glyph_index, code=code,
+                                                    allow_growth=True)
                 mapped = f" and mapped to '{self._char_display(code)}' (U+{code:04X})" if code is not None else ""
                 messagebox.showinfo(
                     "Glyph Added",
@@ -1505,9 +1526,6 @@ class GlyphEditorApp:
                     f"Free glyph slots: {self.font.free_glyph_slots()}."
                 )
                 status = f"Glyph #{glyph_index} deleted"
-        except NoFreeSlotError as e:
-            messagebox.showerror("No Free Slot", str(e))
-            return
         except ValueError as e:
             messagebox.showerror("Action Failed", str(e))
             return

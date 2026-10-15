@@ -10,10 +10,13 @@ inside the glyph array, the glyph count drops and the freed bytes stay as a gap 
 front of the charmap (which the font object reaches through a pointer, so it does
 not have to follow the array directly).  Adding a glyph reuses such a gap.
 
-Growing the glyph array (moving the charmap and everything behind it, and fixing
-the counts/pointers/sizes that were found) was tried and the game refused the
-resulting file, for a reason that could not be found in the file - so it is not
-supported: the font can hold at most as many glyphs as the original file.
+Only when there is no gap can the array be grown (allow_growth=True): the charmap
+and everything behind it move, and the counts, pointers, sizes and descriptor
+entries that depend on that are rewritten the way the original fonts have them
+(checked against all four shipped files).  Whatever changes the header (the
+section sizes, the metadata offset) also needs the header checksum redone - the
+game refuses a file whose checksum is stale; save() takes care of that and of the
+charmap's probe limit, so a saved file is always consistent.
 """
 
 import math
@@ -37,15 +40,37 @@ CHARMAP_SIZE = CHARMAP_SLOT_COUNT * CHARMAP_SLOT_SIZE
 SENTINEL = 0xFFFF  # empty charmap slot / reserved value
 MAX_GLYPHS = SENTINEL - 1   # glyph indices are uint16 in the charmap; 0xFFFF is reserved
 
-# --- Container layout (the little that is needed) ------------------------------
-SECTION_DATA_OFFSET_FIELD = 0x38   # CAFF header: file offset of the .data section
+# --- Container layout --------------------------------------------------------
+CAFF_HEADER_SIZE = 0x180
+CAFF_CHECKSUM_FIELD = 0x14               # checksum of the first 0x180 bytes
+# Derived from, and checked against, all four shipped fonts.
+# CAFF header (file offsets, little-endian uint32):
+SECTION_DATA_OFFSET_FIELD = 0x38         # file offset of the .data section
+SECTION_DATA_SIZE_FIELDS = (0x50, 0x64)  # .data size (stored twice)
+SECTION_GPU_SIZE_FIELDS = (0x78, 0x8C)   # .gpu size = texture pixels (stored twice)
+INFO_BLOCK_FIELD = 0x34                  # .data-relative start of the metadata block
 # Font object inside .data (pointers are relative to the start of .data):
-CHARMAP_PTR_FIELD = 0x4C4          # -> charmap; it does not have to follow the array
+CHARMAP_PTR_FIELD = 0x4C4                # -> charmap; it does not have to follow the array
+GLYPH_ARRAY_PTR_FIELD = 0x4F0            # -> glyph array
+# The game limits a charmap lookup to this many probes.  In every shipped font it
+# is exactly the longest probe sequence any entry needs (1 for the collision-free
+# ConkerFont and FrontendTitle, 34 for ConkerFontJapanese), so an entry placed
+# deeper than this is never found.  save() keeps it large enough.
+CHARMAP_MAX_PROBES_FIELD = 0x4E4
+# Behind the 2048 charmap slots: FFFFFFFF, zero padding up to a 32-byte boundary
+# (relative to .data), the 'texture' resource (0x58 bytes), the metadata strings and
+# a table of resource descriptors:  [1][0][E] | 010502000000 [T][0x58] |
+# 010502000000 [0][gpu size] | ...   with E = size of the font resource (up to and
+# including the FFFFFFFF) and T = offset of the texture resource.
+CHARMAP_TRAILER_SIZE = 4
+RESOURCE_ALIGNMENT = 32
+TEXTURE_RESOURCE_SIZE = 0x58
+DESCRIPTOR_HEADER = bytes.fromhex("010502000000")
 
-# The font object also stores one Unicode code point here (U+25A1, the white
-# square, in ConkerFont - the glyph that is last in the array).  Its purpose is not
-# known; it may be the character shown for unknown symbols, so the editor warns
-# before the glyph for it is removed.
+# The font object also stores one Unicode code point here: U+25A1 (the white
+# square) in all four shipped fonts - it is not the highest code (the Japanese fonts
+# map kanji above it).  Its purpose is not known; it may be the character shown for
+# unknown symbols, so the editor warns before the glyph for it is removed.
 HEADER_CODE_FIELD = 0x4D8
 
 # Glyph rectangle coordinates (x0/x1/y0/y1_raw) are uint16 values in a
@@ -137,6 +162,25 @@ def _code_plausibility(code):
     if 0x3040 <= code < 0xA000: return 1          # Hiragana/Katakana/CJK
     if 0xFF00 <= code < 0xFFF0: return 1          # fullwidth forms
     return 2                                        # anything else: least preferred
+
+
+def caff_checksum(data):
+    """The CAFF header checksum (stored at CAFF_CHECKSUM_FIELD): a nibble-shifting
+    hash (PJW-style) over the first 0x180 bytes with the checksum field zeroed.
+    The game refuses a file whose stored value does not match, so it must be
+    redone after any change to the header (section sizes, metadata offset).
+    Algorithm from the CAFF text tool; it reproduces the value of all four shipped
+    fonts, and files with a stale value are exactly the ones the game rejects."""
+    header = bytearray(bytes(data[:CAFF_HEADER_SIZE]).ljust(CAFF_HEADER_SIZE, b"\x00"))
+    struct.pack_into("<I", header, CAFF_CHECKSUM_FIELD, 0)
+    checksum = 0
+    for byte in header:
+        signed = byte - 256 if byte > 127 else byte        # the bytes are added as int8
+        checksum = ((checksum << 4) + signed) & 0xFFFFFFFF
+        top = checksum & 0xF0000000
+        if top:
+            checksum ^= top | (top >> 24)
+    return checksum
 
 
 # field1 field2 x0 x1 y0 y1 byte14 byte15 reserved(0xFFFF) unknown_field
@@ -287,7 +331,7 @@ class Glyph:
 
 
 class NoFreeSlotError(ValueError):
-    """The glyph table has no free slot (the table cannot be enlarged)."""
+    """The glyph table has no free slot; adding a glyph would have to grow the file."""
 
 
 class ConkerFont:
@@ -412,6 +456,11 @@ class ConkerFont:
         return (self._charmap_start() - self._array_end()) // GLYPH_REC_SIZE
 
     @property
+    def checksum_ok(self):
+        """True if the stored header checksum matches the header."""
+        return self._u32(CAFF_CHECKSUM_FIELD) == caff_checksum(self.data)
+
+    @property
     def header_code(self):
         """The code point stored in the font header (see HEADER_CODE_FIELD)."""
         return self._u32(HEADER_CODE_FIELD)
@@ -497,6 +546,21 @@ class ConkerFont:
 
     def _slot_of(self, code):
         return (self._charmap_offsets[code] - self._charmap_start()) // CHARMAP_SLOT_SIZE
+
+    def _probes_needed(self, code):
+        """How many probes a lookup of ``code`` takes with the entry where it sits."""
+        slot = self._slot_of(code)
+        for probes, candidate in enumerate(self._probe_slots(code), 1):
+            if candidate == slot:
+                return probes
+        raise ValueError(f"U+{code:04X} sits outside its own probe sequence")
+
+    def _update_max_probes(self):
+        """Raise the header's probe limit if some entry needs more probes than it
+        allows (it is never lowered - a larger limit only costs a lookup nothing)."""
+        needed = max((self._probes_needed(code) for code in self.charmap), default=1)
+        if needed > self._u32(CHARMAP_MAX_PROBES_FIELD):
+            struct.pack_into("<I", self.data, CHARMAP_MAX_PROBES_FIELD, needed)
 
     def _entries_in_slot_order(self):
         """Charmap entries ordered by physical slot (stable rebuild order)."""
@@ -715,19 +779,120 @@ class ConkerFont:
     def _set_glyph_count(self, count):
         struct.pack_into("<I", self.data, GLYPH_COUNT_HEADER_OFFSET, count)
 
+    def _plan_growth(self):
+        """Validate the container layout and work out what growing the glyph array
+        by one record changes (only used when there is no free slot).
+
+        Everything behind the glyph array (charmap, padding, the 'texture'
+        resource, metadata, and the whole .gpu section) moves, so these follow: the
+        glyph count, the charmap pointer, both copies of the .data size, the
+        metadata-block offset, the sizes/offsets in the resource descriptor table
+        and the zero padding that keeps the texture resource 32-byte aligned.
+
+        Raises ValueError for a layout that does not match the shipped fonts, so
+        that nothing gets corrupted by guessing.
+        """
+        d = self.data
+
+        def refuse(why):
+            return ValueError(f"unsupported file layout, cannot grow the glyph table: {why}")
+
+        data_off = self._u32(SECTION_DATA_OFFSET_FIELD)
+        data_sizes = {self._u32(o) for o in SECTION_DATA_SIZE_FIELDS}
+        gpu_sizes = {self._u32(o) for o in SECTION_GPU_SIZE_FIELDS}
+        if len(data_sizes) != 1 or len(gpu_sizes) != 1:
+            raise refuse("section size fields disagree")
+        data_size, gpu_size = data_sizes.pop(), gpu_sizes.pop()
+        if data_off + data_size + gpu_size != len(d):
+            raise refuse("section sizes do not add up to the file size")
+
+        charmap_start = self._charmap_start()
+        if charmap_start != self._array_end():
+            raise refuse("the charmap does not directly follow the glyph array")
+        if self._u32(CHARMAP_PTR_FIELD) != charmap_start - data_off:
+            raise refuse("charmap pointer does not point at the end of the glyph array")
+        if self._u32(GLYPH_ARRAY_PTR_FIELD) != GLYPH_TABLE_OFFSET - data_off:
+            raise refuse("glyph array pointer does not point at the array")
+
+        slots_end = charmap_start + CHARMAP_SIZE
+        block_end = slots_end + CHARMAP_TRAILER_SIZE
+        if d[slots_end:block_end] != b"\xff" * CHARMAP_TRAILER_SIZE:
+            raise refuse("unexpected bytes behind the charmap")
+        res_start = data_off + self._align_up(block_end - data_off, RESOURCE_ALIGNMENT)
+        data_end = data_off + data_size
+        if res_start + TEXTURE_RESOURCE_SIZE > data_end:
+            raise refuse("no resource data behind the charmap")
+        if any(d[block_end:res_start]):
+            raise refuse("padding behind the charmap is not zero")
+        if d[res_start:res_start + 8] != b"texture\x00":
+            raise refuse("the texture resource is not where it is expected")
+        if self._u32(INFO_BLOCK_FIELD) != res_start - data_off + TEXTURE_RESOURCE_SIZE:
+            raise refuse("metadata block does not follow the texture resource")
+
+        # Resource descriptor table: [1][0][E] | hdr [T][0x58] | hdr [0][gpu size]
+        e_pos = d.find(struct.pack("<I", block_end - data_off), res_start, data_end)
+        if (e_pos < 8
+                or d[e_pos - 8:e_pos] != struct.pack("<II", 1, 0)
+                or d[e_pos + 4:e_pos + 10] != DESCRIPTOR_HEADER
+                or struct.unpack_from("<II", d, e_pos + 10) != (res_start - data_off, TEXTURE_RESOURCE_SIZE)
+                or d[e_pos + 18:e_pos + 24] != DESCRIPTOR_HEADER
+                or struct.unpack_from("<II", d, e_pos + 24) != (0, gpu_size)):
+            raise refuse("resource descriptor table not recognised")
+
+        new_block_end = block_end + GLYPH_REC_SIZE
+        new_res_start = data_off + self._align_up(new_block_end - data_off, RESOURCE_ALIGNMENT)
+        return {
+            "data_off": data_off, "data_size": data_size, "info": self._u32(INFO_BLOCK_FIELD),
+            "block_end": block_end, "res_start": res_start, "refs": [e_pos, e_pos + 10],
+            "new_block_end": new_block_end, "new_res_start": new_res_start,
+        }
+
+    def _grow_glyph_array(self):
+        """Append one blank record behind the last glyph by moving everything
+        after the array and rewriting the bookkeeping that depends on it."""
+        plan = self._plan_growth()
+        d = self.data
+        data_off = plan["data_off"]
+        array_end = self._array_end()
+
+        blank = bytes(14) + b"\xff\xff" + bytes(2)   # reserved field is always FFFF
+        new = d[:array_end] + blank + d[array_end:plan["block_end"]]
+        new += bytes(plan["new_res_start"] - plan["new_block_end"])    # alignment padding
+        new += d[plan["res_start"]:]
+        shift = plan["new_res_start"] - plan["res_start"]
+
+        def put(offset, value):
+            struct.pack_into("<I", new, offset, value)
+
+        put(GLYPH_COUNT_HEADER_OFFSET, self.glyph_count + 1)
+        put(CHARMAP_PTR_FIELD, array_end + GLYPH_REC_SIZE - data_off)
+        for field in SECTION_DATA_SIZE_FIELDS:
+            put(field, plan["data_size"] + shift)
+        put(INFO_BLOCK_FIELD, plan["info"] + shift)
+        for pos, value in zip(plan["refs"], (plan["new_block_end"], plan["new_res_start"])):
+            put(pos + shift, value - data_off)
+
+        self.data = new
+        self._reparse()
+
+    @staticmethod
+    def _align_up(value, alignment):
+        return -(-value // alignment) * alignment
+
     def _restore(self, snapshot):
         self.data = bytearray(snapshot)
         self._reparse()
 
-    def add_glyph(self, template_index=None, code=None):
+    def add_glyph(self, template_index=None, code=None, allow_growth=False):
         """Append a new glyph at the end of the glyph array and return its index.
 
         The new glyph is a copy of glyph ``template_index`` (rectangle and
         metrics - so it is visible and editable right away) or an empty glyph if
         that is None.  If ``code`` is given it is mapped to the new glyph.
 
-        The record goes into the free gap left by earlier deletions, so the file
-        layout never changes.  Without a free slot NoFreeSlotError is raised.
+        The record goes into the free gap left by earlier deletions, which keeps the
+        file layout untouched.  Without a free slot NoFreeSlotError is raised unless
+        ``allow_growth`` is true, which grows the file (see _grow_glyph_array).
         All-or-nothing: on any error the font is left exactly as it was.
         """
         if self.glyph_count >= MAX_GLYPHS:
@@ -739,12 +904,15 @@ class ConkerFont:
                 raise ValueError("character must be a BMP code point other than U+FFFF")
             if code in self.charmap:
                 raise ValueError(f"U+{code:04X} is already assigned to glyph #{self.charmap[code]}")
-        if self.free_glyph_slots() <= 0:
-            raise NoFreeSlotError(
-                "The glyph table has no free slot. The table cannot be enlarged (the game "
-                "does not accept a resized file), so a glyph can only be added where one "
-                "was deleted before - delete a glyph you do not need first."
-            )
+
+        has_slot = self.free_glyph_slots() > 0
+        if not has_slot:
+            if not allow_growth:
+                raise NoFreeSlotError(
+                    "The glyph table has no free slot. Deleting a glyph frees one; "
+                    "otherwise the file has to be grown."
+                )
+            self._plan_growth()                    # refuse unknown layouts up front
 
         new_index = self.glyph_count
         glyph = Glyph(new_index) if template_index is None else self.glyphs[template_index].clone()
@@ -752,10 +920,13 @@ class ConkerFont:
         glyph.char = ""                            # no character mapped yet
         snapshot = bytes(self.data)
         try:
-            end = self._array_end()
-            self.data[end:end + GLYPH_REC_SIZE] = bytes(14) + b"\xff\xff" + bytes(2)   # reserved = FFFF
-            self._set_glyph_count(new_index + 1)
-            self._reparse()
+            if has_slot:
+                end = self._array_end()
+                self.data[end:end + GLYPH_REC_SIZE] = bytes(14) + b"\xff\xff" + bytes(2)   # reserved = FFFF
+                self._set_glyph_count(new_index + 1)
+                self._reparse()
+            else:
+                self._grow_glyph_array()
             self.write_glyph(glyph)
             if code is not None:
                 self.add_glyph_character_alias(new_index, code)
@@ -820,7 +991,11 @@ class ConkerFont:
 
         The data goes to a temporary file in the same directory which then
         replaces the target atomically, so a failed write cannot leave a
-        half-written (corrupt) file behind."""
+        half-written (corrupt) file behind.  The charmap's probe limit and the header
+        checksum are brought up to date first, so a saved file is always one the
+        game accepts and finds all its characters in."""
+        self._update_max_probes()
+        struct.pack_into("<I", self.data, CAFF_CHECKSUM_FIELD, caff_checksum(self.data))
         result = out_path or self.path
         target = os.path.realpath(result)          # write through symlinks
         fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(target),
