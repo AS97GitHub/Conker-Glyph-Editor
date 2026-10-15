@@ -197,26 +197,6 @@ class Glyph:
 
     attribute         | display name     | meaning
     --------------------------------------------------------------------------------
-    unknown_field     | Unknown          | CONFIRMED IN-GAME: no visible effect even
-                      |                  | at extreme test values (0 and 255), not
-                      |                  | just small changes. High byte is always
-                      |                  | 0x00 across the whole glyph table (not a
-                      |                  | second independent byte - the "two
-                      |                  | independent parameters" idea was tested
-                      |                  | and does not hold at the byte-split
-                      |                  | level). Low byte holds a plausible but
-                      |                  | apparently inert number (0-55 range).
-                      |                  | Most likely explanation: not read by the
-                      |                  | text renderer at all - possibly legacy/
-                      |                  | tooling data, or used by some other game
-                      |                  | system unrelated to on-screen glyph
-                      |                  | drawing. Not fully ruled out.
-    --------------------------------------------------------------------------------
-    x0_raw            | Start X          | Texture-atlas rectangle, left edge.
-    y0_raw            | Start Y          | Texture-atlas rectangle, top edge.
-    x1_raw            | End X            | Texture-atlas rectangle, right edge.
-    y1_raw            | End Y            | Texture-atlas rectangle, bottom edge.
-    --------------------------------------------------------------------------------
     field1 (hi byte)  | Y Bearing        | Vertical offset of the glyph relative to
                       |                  | the baseline. Positive = glyph sits
                       |                  | lower (below baseline); negative = glyph
@@ -232,12 +212,32 @@ class Glyph:
                       |                  | (stretches/squashes) the glyph on the X
                       |                  | axis when changed. Unsigned.
     --------------------------------------------------------------------------------
+    x0_raw            | Start X          | Texture-atlas rectangle, left edge.
+    y0_raw            | Start Y          | Texture-atlas rectangle, top edge.
+    x1_raw            | End X            | Texture-atlas rectangle, right edge.
+    y1_raw            | End Y            | Texture-atlas rectangle, bottom edge.
+    --------------------------------------------------------------------------------
     byte14            | Advance Width    | Horizontal step after this character -
                       |                  | determines where the next character
                       |                  | starts. This is what `unknown_field` (above)
                       |                  | was originally assumed to do. Unsigned.
     --------------------------------------------------------------------------------
     byte15            | -                | Always observed as 0x00; purpose unknown.
+    --------------------------------------------------------------------------------
+    unknown_field     | Unknown          | CONFIRMED IN-GAME: no visible effect even
+                      |                  | at extreme test values (0 and 255), not
+                      |                  | just small changes. High byte is always
+                      |                  | 0x00 across the whole glyph table (not a
+                      |                  | second independent byte - the "two
+                      |                  | independent parameters" idea was tested
+                      |                  | and does not hold at the byte-split
+                      |                  | level). Low byte holds a plausible but
+                      |                  | apparently inert number (0-55 range).
+                      |                  | Most likely explanation: not read by the
+                      |                  | text renderer at all - possibly legacy/
+                      |                  | tooling data, or used by some other game
+                      |                  | system unrelated to on-screen glyph
+                      |                  | drawing. Not fully ruled out.
 
     Record layout (18 bytes): field1, field2, x0, x1, y0, y1 (uint16 each),
     byte14, byte15 (uint8 each), 0xFFFF (reserved - constant in every shipped
