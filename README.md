@@ -133,3 +133,9 @@ DIV   = 16384 / actual_texture_size_in_pixels
 where 16384 = 2¹⁴ — coordinates are stored in a fixed 14-bit normalized grid.
 
 The texture rectangle coordinate formula (`x0/y0/x1/y1`) is derived empirically, while rendering properties (**X/Y Bearing**, **Glyph Width/Height**, and **Advance Width**) are separately **confirmed in-game via XEMU**. Verify your changes in-game when doing large-scale modifications.
+
+---
+
+Not affiliated with Microsoft / Rare. All trademarks are property of their
+respective owners. Intended for non-commercial use (translations, modding,
+format research).
