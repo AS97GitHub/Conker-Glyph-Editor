@@ -5,18 +5,15 @@ Conker: Live & Reloaded CAFF font files (default.bin).
 Field edits are applied in place to the in-memory file image; everything outside
 the touched records stays byte-identical.
 
-Deleting a glyph never changes the file layout: the records behind it move down
-inside the glyph array, the glyph count drops and the freed bytes stay as a gap in
-front of the charmap (which the font object reaches through a pointer, so it does
-not have to follow the array directly).  Adding a glyph reuses such a gap.
-
-Only when there is no gap can the array be grown (allow_growth=True): the charmap
-and everything behind it move, and the counts, pointers, sizes and descriptor
-entries that depend on that are rewritten the way the original fonts have them
-(checked against all four shipped files).  Whatever changes the header (the
-section sizes, the metadata offset) also needs the header checksum redone - the
-game refuses a file whose checksum is stale; save() takes care of that and of the
-charmap's probe limit, so a saved file is always consistent.
+Adding or deleting a glyph resizes the glyph array, which moves everything behind
+it (charmap, padding, texture resource, metadata, the .gpu texture pixels).  The
+file is laid out again the way the original fonts have it, and the bookkeeping that
+depends on it is rewritten: glyph count, charmap pointer, both copies of the .data
+size, the metadata offset, the resource descriptors and the padding that keeps the
+texture resource 32-byte aligned.  The header checksum and the charmap's probe
+limit are brought up to date by save(), so a saved file is always one the game
+accepts.  Files saved by an earlier version may carry a free gap in front of the
+charmap; add_glyph reuses it and delete_glyph closes it.
 """
 
 import math
@@ -197,6 +194,26 @@ class Glyph:
 
     attribute         | display name     | meaning
     --------------------------------------------------------------------------------
+    unknown_field     | Unknown          | CONFIRMED IN-GAME: no visible effect even
+                      |                  | at extreme test values (0 and 255), not
+                      |                  | just small changes. High byte is always
+                      |                  | 0x00 across the whole glyph table (not a
+                      |                  | second independent byte - the "two
+                      |                  | independent parameters" idea was tested
+                      |                  | and does not hold at the byte-split
+                      |                  | level). Low byte holds a plausible but
+                      |                  | apparently inert number (0-55 range).
+                      |                  | Most likely explanation: not read by the
+                      |                  | text renderer at all - possibly legacy/
+                      |                  | tooling data, or used by some other game
+                      |                  | system unrelated to on-screen glyph
+                      |                  | drawing. Not fully ruled out.
+    --------------------------------------------------------------------------------
+    x0_raw            | Start X          | Texture-atlas rectangle, left edge.
+    y0_raw            | Start Y          | Texture-atlas rectangle, top edge.
+    x1_raw            | End X            | Texture-atlas rectangle, right edge.
+    y1_raw            | End Y            | Texture-atlas rectangle, bottom edge.
+    --------------------------------------------------------------------------------
     field1 (hi byte)  | Y Bearing        | Vertical offset of the glyph relative to
                       |                  | the baseline. Positive = glyph sits
                       |                  | lower (below baseline); negative = glyph
@@ -212,32 +229,12 @@ class Glyph:
                       |                  | (stretches/squashes) the glyph on the X
                       |                  | axis when changed. Unsigned.
     --------------------------------------------------------------------------------
-    x0_raw            | Start X          | Texture-atlas rectangle, left edge.
-    y0_raw            | Start Y          | Texture-atlas rectangle, top edge.
-    x1_raw            | End X            | Texture-atlas rectangle, right edge.
-    y1_raw            | End Y            | Texture-atlas rectangle, bottom edge.
-    --------------------------------------------------------------------------------
     byte14            | Advance Width    | Horizontal step after this character -
                       |                  | determines where the next character
                       |                  | starts. This is what `unknown_field` (above)
                       |                  | was originally assumed to do. Unsigned.
     --------------------------------------------------------------------------------
     byte15            | -                | Always observed as 0x00; purpose unknown.
-    --------------------------------------------------------------------------------
-    unknown_field     | Unknown          | CONFIRMED IN-GAME: no visible effect even
-                      |                  | at extreme test values (0 and 255), not
-                      |                  | just small changes. High byte is always
-                      |                  | 0x00 across the whole glyph table (not a
-                      |                  | second independent byte - the "two
-                      |                  | independent parameters" idea was tested
-                      |                  | and does not hold at the byte-split
-                      |                  | level). Low byte holds a plausible but
-                      |                  | apparently inert number (0-55 range).
-                      |                  | Most likely explanation: not read by the
-                      |                  | text renderer at all - possibly legacy/
-                      |                  | tooling data, or used by some other game
-                      |                  | system unrelated to on-screen glyph
-                      |                  | drawing. Not fully ruled out.
 
     Record layout (18 bytes): field1, field2, x0, x1, y0, y1 (uint16 each),
     byte14, byte15 (uint8 each), 0xFFFF (reserved - constant in every shipped
@@ -328,10 +325,6 @@ class Glyph:
     def same_data(self, other):
         """True if every field (including index and char) equals ``other``'s."""
         return all(getattr(self, slot) == getattr(other, slot) for slot in self.__slots__)
-
-
-class NoFreeSlotError(ValueError):
-    """The glyph table has no free slot; adding a glyph would have to grow the file."""
 
 
 class ConkerFont:
@@ -454,6 +447,12 @@ class ConkerFont:
     def free_glyph_slots(self):
         """How many glyph records fit into the gap in front of the charmap."""
         return (self._charmap_start() - self._array_end()) // GLYPH_REC_SIZE
+
+    @property
+    def texture_offset(self):
+        """File offset of the texture pixels (start of the .gpu section) - where
+        the texture is extracted from / written back to."""
+        return self._u32(SECTION_DATA_OFFSET_FIELD) + self._u32(SECTION_DATA_SIZE_FIELDS[0])
 
     @property
     def checksum_ok(self):
@@ -747,30 +746,6 @@ class ConkerFont:
 
         raise ValueError(self._no_slot_message(code))
 
-    def clear_glyph(self, glyph_index):
-        """Clear a glyph in place: wipe its charmap entries and its record.
-
-        The glyph keeps its index (use delete_glyph to remove the record and
-        renumber the following glyphs):
-
-        - Every charmap slot currently mapped to this glyph is cleared to
-          the same FFFF FFFF "empty slot" pattern used elsewhere for unused
-          charmap entries (see remove_glyph_character_alias).
-        - The glyph's own fields (metrics, rectangle, unknown_field) are zeroed,
-          leaving an empty/inert glyph at that index.
-
-        glyph_count and every other glyph's index are left untouched.
-        """
-        if not (0 <= glyph_index < self.glyph_count):
-            raise ValueError(f"glyph index must be between 0 and {self.glyph_count - 1}")
-
-        codes_to_clear = self.codes_for_glyph(glyph_index)
-        if codes_to_clear:
-            self._remove_charmap_codes(codes_to_clear, glyph_index)
-
-        self.write_glyph(Glyph(glyph_index))
-        self._apply_charmap_to_glyphs()
-
     # ---------- Adding / deleting glyphs ----------
 
     def _u32(self, offset):
@@ -779,23 +754,21 @@ class ConkerFont:
     def _set_glyph_count(self, count):
         struct.pack_into("<I", self.data, GLYPH_COUNT_HEADER_OFFSET, count)
 
-    def _plan_growth(self):
-        """Validate the container layout and work out what growing the glyph array
-        by one record changes (only used when there is no free slot).
+    @staticmethod
+    def _align_up(value, alignment):
+        return -(-value // alignment) * alignment
 
-        Everything behind the glyph array (charmap, padding, the 'texture'
-        resource, metadata, and the whole .gpu section) moves, so these follow: the
-        glyph count, the charmap pointer, both copies of the .data size, the
-        metadata-block offset, the sizes/offsets in the resource descriptor table
-        and the zero padding that keeps the texture resource 32-byte aligned.
+    def _plan_layout(self):
+        """Validate the container layout (as found in all four shipped fonts) and
+        collect what a resize of the glyph array has to move and rewrite.
 
-        Raises ValueError for a layout that does not match the shipped fonts, so
-        that nothing gets corrupted by guessing.
+        Raises ValueError for a layout that does not match, so that nothing gets
+        corrupted by guessing.
         """
         d = self.data
 
         def refuse(why):
-            return ValueError(f"unsupported file layout, cannot grow the glyph table: {why}")
+            return ValueError(f"unsupported file layout, cannot resize the glyph table: {why}")
 
         data_off = self._u32(SECTION_DATA_OFFSET_FIELD)
         data_sizes = {self._u32(o) for o in SECTION_DATA_SIZE_FIELDS}
@@ -807,10 +780,8 @@ class ConkerFont:
             raise refuse("section sizes do not add up to the file size")
 
         charmap_start = self._charmap_start()
-        if charmap_start != self._array_end():
-            raise refuse("the charmap does not directly follow the glyph array")
         if self._u32(CHARMAP_PTR_FIELD) != charmap_start - data_off:
-            raise refuse("charmap pointer does not point at the end of the glyph array")
+            raise refuse("charmap pointer is not consistent with the glyph array")
         if self._u32(GLYPH_ARRAY_PTR_FIELD) != GLYPH_TABLE_OFFSET - data_off:
             raise refuse("glyph array pointer does not point at the array")
 
@@ -839,61 +810,58 @@ class ConkerFont:
                 or struct.unpack_from("<II", d, e_pos + 24) != (0, gpu_size)):
             raise refuse("resource descriptor table not recognised")
 
-        new_block_end = block_end + GLYPH_REC_SIZE
-        new_res_start = data_off + self._align_up(new_block_end - data_off, RESOURCE_ALIGNMENT)
         return {
             "data_off": data_off, "data_size": data_size, "info": self._u32(INFO_BLOCK_FIELD),
-            "block_end": block_end, "res_start": res_start, "refs": [e_pos, e_pos + 10],
-            "new_block_end": new_block_end, "new_res_start": new_res_start,
+            "charmap_start": charmap_start, "block_end": block_end, "res_start": res_start,
+            "e_pos": e_pos,
         }
 
-    def _grow_glyph_array(self):
-        """Append one blank record behind the last glyph by moving everything
-        after the array and rewriting the bookkeeping that depends on it."""
-        plan = self._plan_growth()
+    def _relayout(self, array):
+        """Replace the glyph array by ``array`` (the bytes of all records) and lay
+        out everything behind it again: the charmap follows the array directly, the
+        texture resource stays 32-byte aligned (the padding grows or shrinks), the
+        rest of the file moves along, and the sizes/offsets that depend on it are
+        rewritten.  The charmap must already use the new glyph numbering."""
+        plan = self._plan_layout()
         d = self.data
         data_off = plan["data_off"]
-        array_end = self._array_end()
+        count = len(array) // GLYPH_REC_SIZE
 
-        blank = bytes(14) + b"\xff\xff" + bytes(2)   # reserved field is always FFFF
-        new = d[:array_end] + blank + d[array_end:plan["block_end"]]
-        new += bytes(plan["new_res_start"] - plan["new_block_end"])    # alignment padding
+        block = d[plan["charmap_start"]:plan["block_end"]]      # charmap slots + FFFFFFFF
+        new_block_end = GLYPH_TABLE_OFFSET + len(array) + len(block)
+        new_res_start = data_off + self._align_up(new_block_end - data_off, RESOURCE_ALIGNMENT)
+        shift = new_res_start - plan["res_start"]
+
+        new = d[:GLYPH_TABLE_OFFSET] + array + block
+        new += bytes(new_res_start - new_block_end)             # alignment padding
         new += d[plan["res_start"]:]
-        shift = plan["new_res_start"] - plan["res_start"]
 
         def put(offset, value):
             struct.pack_into("<I", new, offset, value)
 
-        put(GLYPH_COUNT_HEADER_OFFSET, self.glyph_count + 1)
-        put(CHARMAP_PTR_FIELD, array_end + GLYPH_REC_SIZE - data_off)
+        put(GLYPH_COUNT_HEADER_OFFSET, count)
+        put(CHARMAP_PTR_FIELD, GLYPH_TABLE_OFFSET + len(array) - data_off)
         for field in SECTION_DATA_SIZE_FIELDS:
             put(field, plan["data_size"] + shift)
         put(INFO_BLOCK_FIELD, plan["info"] + shift)
-        for pos, value in zip(plan["refs"], (plan["new_block_end"], plan["new_res_start"])):
-            put(pos + shift, value - data_off)
+        put(plan["e_pos"] + shift, new_block_end - data_off)          # font resource size E
+        put(plan["e_pos"] + shift + 10, new_res_start - data_off)     # texture resource offset T
 
         self.data = new
         self._reparse()
-
-    @staticmethod
-    def _align_up(value, alignment):
-        return -(-value // alignment) * alignment
 
     def _restore(self, snapshot):
         self.data = bytearray(snapshot)
         self._reparse()
 
-    def add_glyph(self, template_index=None, code=None, allow_growth=False):
+    def add_glyph(self, template_index=None, code=None):
         """Append a new glyph at the end of the glyph array and return its index.
 
         The new glyph is a copy of glyph ``template_index`` (rectangle and
         metrics - so it is visible and editable right away) or an empty glyph if
-        that is None.  If ``code`` is given it is mapped to the new glyph.
-
-        The record goes into the free gap left by earlier deletions, which keeps the
-        file layout untouched.  Without a free slot NoFreeSlotError is raised unless
-        ``allow_growth`` is true, which grows the file (see _grow_glyph_array).
-        All-or-nothing: on any error the font is left exactly as it was.
+        that is None.  If ``code`` is given it is mapped to the new glyph.  The file
+        grows as needed.  All-or-nothing: on any error the font is left exactly as
+        it was.
         """
         if self.glyph_count >= MAX_GLYPHS:
             raise ValueError(f"the font already has the maximum of {MAX_GLYPHS} glyphs")
@@ -904,29 +872,24 @@ class ConkerFont:
                 raise ValueError("character must be a BMP code point other than U+FFFF")
             if code in self.charmap:
                 raise ValueError(f"U+{code:04X} is already assigned to glyph #{self.charmap[code]}")
-
-        has_slot = self.free_glyph_slots() > 0
-        if not has_slot:
-            if not allow_growth:
-                raise NoFreeSlotError(
-                    "The glyph table has no free slot. Deleting a glyph frees one; "
-                    "otherwise the file has to be grown."
-                )
-            self._plan_growth()                    # refuse unknown layouts up front
+        has_gap = self.free_glyph_slots() > 0
+        if not has_gap:
+            self._plan_layout()                    # refuse unknown layouts up front
 
         new_index = self.glyph_count
         glyph = Glyph(new_index) if template_index is None else self.glyphs[template_index].clone()
         glyph.index = new_index
         glyph.char = ""                            # no character mapped yet
+        blank = bytes(14) + b"\xff\xff" + bytes(2)  # reserved field is always FFFF
         snapshot = bytes(self.data)
         try:
-            if has_slot:
-                end = self._array_end()
-                self.data[end:end + GLYPH_REC_SIZE] = bytes(14) + b"\xff\xff" + bytes(2)   # reserved = FFFF
+            end = self._array_end()
+            if has_gap:                            # gap left by an earlier version
+                self.data[end:end + GLYPH_REC_SIZE] = blank
                 self._set_glyph_count(new_index + 1)
                 self._reparse()
             else:
-                self._grow_glyph_array()
+                self._relayout(bytes(self.data[GLYPH_TABLE_OFFSET:end]) + blank)
             self.write_glyph(glyph)
             if code is not None:
                 self.add_glyph_character_alias(new_index, code)
@@ -936,17 +899,15 @@ class ConkerFont:
         return new_index
 
     def delete_glyph(self, glyph_index):
-        """Remove a glyph without touching the file layout.
-
-        Its characters are unmapped, the glyphs behind it move down by one index
-        (records and charmap entries), and the glyph count drops.  The freed bytes
-        stay as a zeroed gap in front of the charmap, so the file keeps its size
-        and every offset, pointer and size in it stays valid.
+        """Remove a glyph: its characters are unmapped, the record leaves the
+        array, every later glyph moves down by one index (records and charmap
+        entries), and everything behind the array moves up - the file shrinks.
         All-or-nothing: on any error the font is left exactly as it was."""
         if not (0 <= glyph_index < self.glyph_count):
             raise ValueError(f"glyph index must be between 0 and {self.glyph_count - 1}")
         if self.glyph_count <= 1:
             raise ValueError("cannot delete the last remaining glyph")
+        self._plan_layout()                        # refuse unknown layouts up front
 
         snapshot = bytes(self.data)
         try:
@@ -956,13 +917,9 @@ class ConkerFont:
             for code, mapped_index in self.charmap.items():
                 if mapped_index > glyph_index:
                     struct.pack_into("<H", self.data, self._charmap_offsets[code] + 2, mapped_index - 1)
-
-            start = GLYPH_TABLE_OFFSET + glyph_index * GLYPH_REC_SIZE
-            end = self._array_end()
-            self.data[start:end - GLYPH_REC_SIZE] = self.data[start + GLYPH_REC_SIZE:end]
-            self.data[end - GLYPH_REC_SIZE:end] = bytes(GLYPH_REC_SIZE)
-            self._set_glyph_count(self.glyph_count - 1)
-            self._reparse()
+            array = bytes(self.data[GLYPH_TABLE_OFFSET:self._array_end()])
+            cut = glyph_index * GLYPH_REC_SIZE
+            self._relayout(array[:cut] + array[cut + GLYPH_REC_SIZE:])
         except Exception:
             self._restore(snapshot)
             raise

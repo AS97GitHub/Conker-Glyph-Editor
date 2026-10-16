@@ -18,7 +18,7 @@ import tkinter.font as tkfont
 
 from PIL import Image, ImageTk
 
-from conker_glyph_format import ConkerFont, FONT_PROFILES, NoFreeSlotError
+from conker_glyph_format import ConkerFont, FONT_PROFILES
 
 
 HANDLE_SIZE = 6          # Size of corner handle box for dragging (in screen pixels)
@@ -27,8 +27,8 @@ MIN_ZOOM, MAX_ZOOM = 1, 16
 
 # Operations of the "Character Management" panel; these ones ignore "New Char"
 # (new_glyph uses it as an optional character for the new glyph).
-CHAR_ACTIONS = ("add", "remove", "replace", "clear_glyph", "new_glyph", "delete_glyph")
-ACTIONS_WITHOUT_NEW_CHAR = ("remove", "clear_glyph", "delete_glyph")
+CHAR_ACTIONS = ("add", "remove", "replace", "new_glyph", "delete_glyph")
+ACTIONS_WITHOUT_NEW_CHAR = ("remove", "delete_glyph")
 
 
 # Errors that mean "this file is unreadable/corrupt" (expected, user-facing):
@@ -617,6 +617,14 @@ class GlyphEditorApp:
             "shows for unknown symbols; removing it may stop the game from starting."
         )
 
+    def _update_texture_offset(self):
+        """Show the file offset of the texture pixels (start of the .gpu section)."""
+        if self.font is None:
+            self.tex_offset_var.set("Texture offset: -")
+        else:
+            offset = self.font.texture_offset
+            self.tex_offset_var.set(f"Texture offset: 0x{offset:X} ({offset})")
+
     def _mark_modified(self, message):
         self.unsaved_changes = True
         self.status_var.set(f"{message} (changes not saved to disk)")
@@ -660,6 +668,10 @@ class GlyphEditorApp:
         zoom_spin.pack(side=tk.LEFT)
         for sequence in ("<Return>", "<FocusOut>"):      # typed values count too
             zoom_spin.bind(sequence, lambda e: self.on_zoom_changed())
+
+        # Reference: where the texture pixels sit in the file (extract / replace here)
+        self.tex_offset_var = tk.StringVar(value="Texture offset: -")
+        ttk.Label(toolbar, textvariable=self.tex_offset_var).pack(side=tk.LEFT, padx=(16, 0))
 
         ttk.Button(toolbar, text="Save As...", command=self.save_as, padding=(8, 2)).pack(side=tk.RIGHT, padx=(3, 0))
         ttk.Button(toolbar, text="Save (overwrite)", command=self.save_overwrite, padding=(8, 2)).pack(side=tk.RIGHT, padx=(0, 3))
@@ -883,9 +895,8 @@ class GlyphEditorApp:
             "**add:** maps New Char to the selected glyph (in addition to any existing characters). Duplicate codes are rejected.\n"
             "**remove:** deletes the character chosen in Old Char from the selected glyph.\n"
             "**replace:** reassigns the character chosen in Old Char to point to New Char instead.\n"
-            "**clear_glyph:** clears the whole selected glyph but keeps its slot. Clears every charmap entry pointing to it (like an empty slot) and zeroes the glyph's own data. Asks for confirmation first; cannot be undone once saved.\n"
-            "**new_glyph:** appends a new glyph at the end of the glyph table as a copy of the selected one, so it is visible and editable right away. New Char is optional and maps a character to the new glyph. It uses the free slot that delete_glyph leaves behind; without one it offers to grow the file (experimental - keep a backup).\n"
-            "**delete_glyph:** removes the selected glyph: its characters are unmapped and every later glyph moves down by one index. The file size and layout stay exactly the same - the freed space is kept as a free slot for new_glyph. Asks for confirmation first; cannot be undone once saved.\n\n"
+            "**new_glyph:** appends a new glyph at the end of the glyph table as a copy of the selected one, so it is visible and editable right away. New Char is optional and maps a character to the new glyph. The file grows: everything behind the glyph table moves and the file's sizes, offsets and checksum are updated automatically.\n"
+            "**delete_glyph:** removes the selected glyph: its characters are unmapped and every later glyph moves down by one index. The file shrinks and everything behind the glyph table moves up. Asks for confirmation first; cannot be undone once saved.\n"
             "**VERIFIED IN-GAME (via XEMU):**\n"
             "**Glyph Width/Height:** physical glyph size. Changing these visibly stretches/quashes the glyph on screen along X/Y. Stored as **TWO** independent bytes, not one number.\n"
             "**Advance Width:** horizontal step after this character - where the next one starts.\n"
@@ -967,6 +978,7 @@ class GlyphEditorApp:
                 var.set("")
 
         self._refresh_glyph_list()
+        self._update_texture_offset()
         if keep_selection:
             self.select_glyph(self.selected_index)   # also redraws the canvas
         else:
@@ -1389,8 +1401,8 @@ class GlyphEditorApp:
             self.old_char_combo['values'] = []
 
         if action in ACTIONS_WITHOUT_NEW_CHAR:
-            # 'remove' picks the code via Old Char; 'clear_glyph' and
-            # 'delete_glyph' act on the whole glyph and need no code.
+            # 'remove' picks the code via Old Char; 'delete_glyph' acts on
+            # the whole glyph and needs no code.
             self.char_mgmt_var.set("")
             self.char_mgmt_entry.config(state="disabled")
         else:
@@ -1464,45 +1476,15 @@ class GlyphEditorApp:
                     f"'{self._char_display(code)}' (U+{code:04X}) in glyph #{glyph_index}"
                 )
                 status = f"U+{old_code:04X} replaced with U+{code:04X} in glyph #{glyph_index}"
-            elif action == "clear_glyph":
-                chars_display = self._glyph_chars_display(glyph_codes)
-                confirmed = messagebox.askyesno(
-                    "Clear Glyph",
-                    f"Clear glyph #{glyph_index} ({chars_display})?\n\n"
-                    "This clears every charmap entry pointing to it (same as "
-                    "an empty FFFF FFFF slot) and zeroes out all of the "
-                    "glyph's own data (metrics and rectangle). This cannot "
-                    "be undone once saved." + self._header_code_warning(glyph_codes),
-                    icon="warning"
-                )
-                if not confirmed:
-                    return
-                self.font.clear_glyph(glyph_index)
-                messagebox.showinfo("Glyph Cleared", f"Glyph #{glyph_index} successfully cleared.")
-                status = f"Glyph #{glyph_index} cleared"
             elif action == "new_glyph":
                 text = self.char_mgmt_var.get()
                 code = self._parse_character(text) if text else None     # optional
-                try:
-                    new_index = self.font.add_glyph(template_index=glyph_index, code=code)
-                except NoFreeSlotError as err:
-                    if not messagebox.askyesno(
-                        "Grow the File?",
-                        f"{err}\n\nGrowing the file moves all data behind the glyph table and "
-                        "rewrites the sizes, offsets and the header checksum inside it, the way "
-                        "the original fonts have them. Keep a backup of your file.\n\n"
-                        "Grow the file anyway?",
-                        icon="warning"
-                    ):
-                        return
-                    new_index = self.font.add_glyph(template_index=glyph_index, code=code,
-                                                    allow_growth=True)
+                new_index = self.font.add_glyph(template_index=glyph_index, code=code)
                 mapped = f" and mapped to '{self._char_display(code)}' (U+{code:04X})" if code is not None else ""
                 messagebox.showinfo(
                     "Glyph Added",
                     f"New glyph #{new_index} added at the end of the glyph table (a copy of "
-                    f"glyph #{glyph_index}){mapped}. Drag its rectangle or edit its fields to shape it. "
-                    f"Free glyph slots left: {self.font.free_glyph_slots()}."
+                    f"glyph #{glyph_index}){mapped}. Drag its rectangle or edit its fields to shape it."
                 )
                 status = f"Glyph #{new_index} added"
             elif action == "delete_glyph":
@@ -1512,19 +1494,15 @@ class GlyphEditorApp:
                     f"Delete glyph #{glyph_index} ({chars_display})?\n\n"
                     "The glyph is removed from the glyph table, its characters are "
                     "unmapped and every later glyph moves down by one index. The file "
-                    "size and layout stay the same; the freed space becomes a free slot "
-                    "for new_glyph. This cannot be undone once saved."
+                    "shrinks and everything behind the glyph table moves up. This "
+                    "cannot be undone once saved."
                     + self._header_code_warning(glyph_codes),
                     icon="warning"
                 )
                 if not confirmed:
                     return
                 self.font.delete_glyph(glyph_index)
-                messagebox.showinfo(
-                    "Glyph Deleted",
-                    f"Glyph #{glyph_index} successfully deleted. "
-                    f"Free glyph slots: {self.font.free_glyph_slots()}."
-                )
+                messagebox.showinfo("Glyph Deleted", f"Glyph #{glyph_index} successfully deleted.")
                 status = f"Glyph #{glyph_index} deleted"
         except ValueError as e:
             messagebox.showerror("Action Failed", str(e))
@@ -1535,9 +1513,10 @@ class GlyphEditorApp:
         self._mark_modified(status)
         self.char_mgmt_var.set("")
         self._refresh_glyph_list()
+        self._update_texture_offset()      # the file may have grown or shrunk
 
         target = glyph_index
-        if action in ("remove", "clear_glyph"):
+        if action == "remove":
             remaining = self.font.codes_for_glyph(glyph_index)
             if self.selected_code not in remaining:
                 self.selected_code = remaining[0] if remaining else None
