@@ -17,6 +17,13 @@
 </tr>
 </table>
 
+[badge-en]: https://img.shields.io/badge/lang-English%20%F0%9F%87%AC%F0%9F%87%A7-white
+[badge-ru]: https://img.shields.io/badge/%D1%8F%D0%B7%D1%8B%D0%BA-%D0%A0%D1%83%D1%81%D1%81%D0%BA%D0%B8%D0%B9%20%F0%9F%87%B7%F0%9F%87%BA-white
+[vot-readme-en]: README.md
+[vot-readme-ru]: README_RU.md
+[![en][badge-en]][vot-readme-en]
+[![ru][badge-ru]][vot-readme-ru]
+
 ## Files
 
 - `conker_glyph_format.py` — library for reading and writing the font format and managing open-addressed character maps (required by the editor)
@@ -66,24 +73,25 @@ python conker_glyph_editor.py path\to\default.bin path\to\texture.png
 
 1. **"Open .bin..."** — select a font file (for example, `default.bin` from `ConkerFont`). The **profile** (`ConkerFont` / `ConkerFontJapanese` / `FrontendTitle` / `FrontendTitleJapanese`) is **detected automatically** from a byte signature in the file and the drop-down updates to match; you only need to pick a profile manually if you want to override the detected one.
 2. **"Open Texture..."** — select the extracted texture for the same font (BMP or PNG, for example one extracted with CrystalTile2, ImageHeat, or your own export).
-3. **Glyphs / Charmap Tabs:** Select a glyph by its index or search assigned characters in the Charmap tab. The selected glyph is highlighted on the texture with a light blue rectangle and corner handles.
+3. **Glyphs / Charmap Tabs:** Select a glyph by its index or search assigned characters in the Charmap tab. The selected glyph is highlighted on the texture with a light blue rectangle and corner handles. The Charmap tab also shows the raw empty slots of the fixed charmap hash table.
 4. **Visual & Property Editing:**
    - Drag a corner handle to resize the glyph rectangle (`x0/y0/x1/y1`).
    - Drag the center of the rectangle to move it.
    - Manually edit metrics on the right panel and click **"Apply Changes"**:
-     - **X Bearing / Y Bearing** — baseline offset (signed -128..127).
-     - **Glyph Width / Glyph Height** — physical on-screen size (rescales the glyph on screen).
+     - **X Bearing / Y Bearing** — baseline offset (signed -128..127). Negative X shifts the glyph left, positive X shifts it right; positive Y moves it lower, negative Y moves it higher.
+     - **Glyph Width / Glyph Height** — physical on-screen size (rescales/stretches the glyph along the X/Y axis).
      - **Advance Width** — horizontal step to the next character.
-5. **Character Management:** Select an action from the menu and click **"Apply"**:
-   - **add** — map a new character or code point (e.g., `U+0410` or a single symbol) to the selected glyph.
-   - **remove** — delete a character alias assigned to the glyph.
-   - **replace** — reassign an existing character mapping to point to a new code point.
-   - **clear_glyph** — wipe all charmap entries pointing to the glyph and zero out its metrics/rectangle data.
+5. **Character Management:** Select an action from the menu, fill in the relevant fields and click **"Apply"**:
+   - **add** — map a new character or code point (a single symbol or `U+XXXX`) to the selected glyph, in addition to its existing characters. Duplicate codes are rejected.
+   - **remove** — delete the character chosen in **Old Char** from the selected glyph. A glyph keeps at least one character; removing the last one is rejected.
+   - **replace** — reassign the character chosen in **Old Char** to the code point entered in **New Char**.
+   - **new_glyph** — append a new glyph at the end of the glyph table as a copy of the selected one, so it is visible and editable right away. **New Char** is optional and maps a character to the new glyph. The file grows: all sizes, offsets and the header checksum are updated automatically.
+   - **delete_glyph** — remove the selected glyph: its characters are unmapped and every later glyph moves down by one index. The file shrinks. Asks for confirmation first; cannot be undone once saved.
 6. **Saving:**
    - **"Save As..."** — save to a new file.
    - **"Save (overwrite)"** — overwrite the open file.
 
-The editor safely modifies the glyph records and rebuilds the fixed 2048-slot hash table without interrupting probe chains or corrupting unrelated file regions.
+The editor safely modifies the glyph records and rebuilds the fixed 2048-slot hash table without interrupting probe chains or corrupting unrelated file regions. When glyphs are added or deleted, the whole container is re-laid-out (charmap, alignment padding, texture resource, metadata, section sizes) and the header checksum plus the charmap probe limit are brought up to date on save, so a saved file is always one the game accepts.
 
 ## Extracting the texture with CrystalTile2
 
