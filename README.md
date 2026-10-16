@@ -49,6 +49,7 @@ Download the latest `.exe` version from the [Releases](https://github.com/AS97Gi
 
 1. Make sure Python 3.8 or later is installed (tkinter is included with the standard Windows Python distribution, so no separate installation is required).
 2. Install Pillow:
+
    ```
    pip install Pillow
    ```
