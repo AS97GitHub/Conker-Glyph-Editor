@@ -22,6 +22,8 @@ import shutil
 import struct
 import tempfile
 
+from conker_texture import read_gray8, write_gray8
+
 # The glyph array is a plain array of 18-byte records (see Glyph for the layout).
 # Its base is what the font object's array pointer (at 0x4F0) targets.
 GLYPH_TABLE_OFFSET = 0x508
@@ -86,15 +88,19 @@ SPECIAL_GLYPH_RAW_THRESHOLD = 60000
 # Calibration parameters per font
 FONT_PROFILES = {
     "ConkerFont": {
+        "TEX_WIDTH": 256, "TEX_HEIGHT": 240,
         "X_DIV": 16384 / 256, "Y_DIV": 16384 / 240, "X_OFFSET": -0.5, "Y_OFFSET": -0.5,
     },
     "ConkerFontJapanese": {
+        "TEX_WIDTH": 1024, "TEX_HEIGHT": 772,
         "X_DIV": 16384 / 1024, "Y_DIV": 16384 / 772, "X_OFFSET": -0.5, "Y_OFFSET": -0.5,
     },
     "FrontendTitle": {
+        "TEX_WIDTH": 512, "TEX_HEIGHT": 203,
         "X_DIV": 16384 / 512, "Y_DIV": 16384 / 203, "X_OFFSET": -0.5, "Y_OFFSET": -0.5,
     },
     "FrontendTitleJapanese": {
+        "TEX_WIDTH": 1024, "TEX_HEIGHT": 335,
         "X_DIV": 16384 / 1024, "Y_DIV": 16384 / 335, "X_OFFSET": -0.5, "Y_OFFSET": -0.5,
     },
 }
@@ -453,6 +459,60 @@ class ConkerFont:
         """File offset of the texture pixels (start of the .gpu section) - where
         the texture is extracted from / written back to."""
         return self._u32(SECTION_DATA_OFFSET_FIELD) + self._u32(SECTION_DATA_SIZE_FIELDS[0])
+
+    @property
+    def texture_size(self):
+        """(width, height) of the texture in pixels, from the font profile.
+        The texture is a single Gray8 plane: W*H bytes."""
+        p = self.profile
+        return (p["TEX_WIDTH"], p["TEX_HEIGHT"])
+
+    @property
+    def gpu_size(self):
+        """Size in bytes of the .gpu section (the texture pixels), from the header."""
+        return self._u32(SECTION_GPU_SIZE_FIELDS[0])
+
+    def _check_texture_layout(self):
+        """Refuse to touch the texture pixels if the .gpu section is not exactly
+        one Gray8 plane of the profile's size (a different size would change the
+        coordinate scale of every glyph rectangle and is not supported)."""
+        w, h = self.texture_size
+        if self.gpu_size != w * h:
+            raise ValueError(
+                f"the .gpu section is {self.gpu_size} bytes, but profile {self.profile_name!r} "
+                f"expects a {w}x{h} texture ({w * h} bytes) - pick the matching profile"
+            )
+        if self.gpu_size != self._u32(SECTION_GPU_SIZE_FIELDS[1]):
+            raise ValueError("the two .gpu size fields disagree")
+        offset = self.texture_offset
+        if offset + w * h > len(self.data):
+            raise ValueError(
+                f"truncated file: texture would need bytes 0x{offset:X}..0x{offset + w * h:X}"
+            )
+
+    def read_texture(self):
+        """Extract the texture as a PIL image (mode 'L', Gray8).
+
+        The pixels are the whole .gpu section: W*H consecutive grayscale bytes,
+        no header, no padding (W*H is a multiple of 32 for every shipped font).
+        The section starts right behind .data (texture_offset), which is not
+        32-byte aligned in the file.  Implemented in conker_texture.read_gray8()."""
+        self._check_texture_layout()
+        return read_gray8(self.data, self.texture_offset, *self.texture_size)
+
+    def replace_texture(self, image):
+        """Replace the texture pixels in-memory with ``image`` (a PIL image of
+        exactly the profile's size; anything else is converted to grayscale).
+
+        The .gpu section size is left untouched - only same-size replacements
+        are possible. Changes are written into self.data; call save() to write
+        the file. The header checksum does not cover the texture, so it stays
+        valid."""
+        self._check_texture_layout()
+        try:
+            write_gray8(self.data, self.texture_offset, image, *self.texture_size)
+        except ValueError as e:
+            raise ValueError(f"{e} (profile {self.profile_name!r})") from e
 
     @property
     def checksum_ok(self):

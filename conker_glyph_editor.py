@@ -2,7 +2,7 @@
 conker_glyph_editor.py - Tkinter editor for the glyph rectangles, metrics and
 character map of Conker: Live & Reloaded CAFF font files (default.bin).
 
-Usage: python conker_glyph_editor.py [default.bin [texture.png]]
+Usage: python conker_glyph_editor.py [default.bin]
 """
 
 import os
@@ -18,12 +18,14 @@ import tkinter.font as tkfont
 
 from PIL import Image, ImageTk
 
+from conker_clipboard import copy_image, paste_image, ClipboardError
 from conker_glyph_format import ConkerFont, FONT_PROFILES
 
 
 HANDLE_SIZE = 6          # Size of corner handle box for dragging (in screen pixels)
 DEFAULT_ZOOM = 4
 MIN_ZOOM, MAX_ZOOM = 1, 16
+MAX_DISPLAY_PIXELS = 32_000_000     # cap for the zoomed texture (it is held as a 4-byte-per-pixel image)
 
 # Operations of the "Character Management" panel; these ones ignore "New Char"
 # (new_glyph uses it as an optional character for the new glyph).
@@ -543,7 +545,7 @@ class GlyphEditorApp:
             self._icon_photo = apply_window_icon(self.root, icon_path)   # keep a reference
 
         self.font = None               # ConkerFont instance
-        self.tex_image = None          # PIL.Image of the original texture
+        self.tex_image = None          # PIL.Image of the texture embedded in the .bin (display copy)
         self.tex_photo = None          # ImageTk.PhotoImage for display (cached per zoom)
         self._tex_photo_zoom = None    # zoom level tex_photo was rendered for
         self.zoom = DEFAULT_ZOOM
@@ -556,6 +558,7 @@ class GlyphEditorApp:
         self.unsaved_changes = False
 
         self._build_ui()
+        self._bind_shortcuts()
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
 
     # ------------------------------------------------------------------ UI
@@ -617,14 +620,6 @@ class GlyphEditorApp:
             "shows for unknown symbols; removing it may stop the game from starting."
         )
 
-    def _update_texture_offset(self):
-        """Show the file offset of the texture pixels (start of the .gpu section)."""
-        if self.font is None:
-            self.tex_offset_var.set("Texture offset: -")
-        else:
-            offset = self.font.texture_offset
-            self.tex_offset_var.set(f"Texture offset: 0x{offset:X} ({offset})")
-
     def _mark_modified(self, message):
         self.unsaved_changes = True
         self.status_var.set(f"{message} (changes not saved to disk)")
@@ -650,7 +645,9 @@ class GlyphEditorApp:
         toolbar.pack(side=tk.TOP, fill=tk.X, padx=4, pady=(6, 2))
 
         ttk.Button(toolbar, text="Open .bin...", command=self.open_bin, padding=(8, 2)).pack(side=tk.LEFT, padx=(0, 3))
-        ttk.Button(toolbar, text="Open texture...", command=self.open_texture, padding=(8, 2)).pack(side=tk.LEFT, padx=(3, 0))
+        ttk.Button(toolbar, text="Import texture...", command=self.import_texture, padding=(8, 2)).pack(side=tk.LEFT, padx=(3, 0))
+
+        ttk.Button(toolbar, text="Export texture...", command=self.export_texture, padding=(8, 2)).pack(side=tk.LEFT, padx=(3, 0))
 
         ttk.Label(toolbar, text="Profile:").pack(side=tk.LEFT, padx=(16, 2))
         self.profile_var = tk.StringVar(value="ConkerFont")
@@ -668,10 +665,6 @@ class GlyphEditorApp:
         zoom_spin.pack(side=tk.LEFT)
         for sequence in ("<Return>", "<FocusOut>"):      # typed values count too
             zoom_spin.bind(sequence, lambda e: self.on_zoom_changed())
-
-        # Reference: where the texture pixels sit in the file (extract / replace here)
-        self.tex_offset_var = tk.StringVar(value="Texture offset: -")
-        ttk.Label(toolbar, textvariable=self.tex_offset_var).pack(side=tk.LEFT, padx=(16, 0))
 
         ttk.Button(toolbar, text="Save As...", command=self.save_as, padding=(8, 2)).pack(side=tk.RIGHT, padx=(3, 0))
         ttk.Button(toolbar, text="Save (overwrite)", command=self.save_overwrite, padding=(8, 2)).pack(side=tk.RIGHT, padx=(0, 3))
@@ -897,6 +890,8 @@ class GlyphEditorApp:
             "**replace:** reassigns the character chosen in Old Char to point to New Char instead.\n"
             "**new_glyph:** appends a new glyph at the end of the glyph table as a copy of the selected one, so it is visible and editable right away. New Char is optional and maps a character to the new glyph. The file grows: everything behind the glyph table moves and the file's sizes, offsets and checksum are updated automatically.\n"
             "**delete_glyph:** removes the selected glyph: its characters are unmapped and every later glyph moves down by one index. The file shrinks and everything behind the glyph table moves up. Asks for confirmation first; cannot be undone once saved.\n"
+            "**Import texture:** replaces the texture inside the .bin with a PNG/BMP of exactly the same size; it is written when you save. **Ctrl+V** imports the image from the clipboard.\n"
+            "**Export texture:** saves the texture of the .bin as a PNG. **Ctrl+C** copies it to the clipboard. (The shortcuts do not apply while you type in a text field.)\n\n"
             "**VERIFIED IN-GAME (via XEMU):**\n"
             "**Glyph Width/Height:** physical glyph size. Changing these visibly stretches/quashes the glyph on screen along X/Y. Stored as **TWO** independent bytes, not one number.\n"
             "**Advance Width:** horizontal step after this character - where the next one starts.\n"
@@ -978,7 +973,7 @@ class GlyphEditorApp:
                 var.set("")
 
         self._refresh_glyph_list()
-        self._update_texture_offset()
+        problem = self._load_embedded_texture()
         if keep_selection:
             self.select_glyph(self.selected_index)   # also redraws the canvas
         else:
@@ -992,58 +987,158 @@ class GlyphEditorApp:
                 "automatically when you save."
             )
         how = "auto-detected" if font.profile_autodetected else "not detected, default used"
-        self.status_var.set(
-            f"Loaded {os.path.basename(path)}: {font.glyph_count} glyphs, "
-            f"profile {font.profile_name} ({how})"
-        )
+        status = (f"Loaded {os.path.basename(path)}: {font.glyph_count} glyphs, "
+                  f"profile {font.profile_name} ({how})")
+        if problem:
+            status += f" - texture not shown: {problem}"
+        self.status_var.set(status)
         return True
 
-    def open_texture(self):
+    # ------------------------------------------------------------ texture
+    # The texture lives inside the .bin; the canvas shows that copy.  Importing
+    # replaces the pixels in the in-memory file image like every other edit, so
+    # nothing reaches the disk before Save (the pixels are < 1 MB: no temp file).
+
+    def _max_zoom(self):
+        """Highest zoom whose scaled texture stays within MAX_DISPLAY_PIXELS."""
+        if self.tex_image is None:
+            return MAX_ZOOM
+        w, h = self.tex_image.size
+        return max(MIN_ZOOM, min(MAX_ZOOM, int((MAX_DISPLAY_PIXELS / (w * h)) ** 0.5)))
+
+    def _load_embedded_texture(self):
+        """(Re)read the texture out of the .bin for display. Returns None on
+        success, otherwise a short reason (e.g. the profile's texture size does not
+        match the file) - the glyph editing keeps working without a picture."""
+        self._tex_photo_zoom = None        # force the scaled copy to be rebuilt
+        self.tex_image = None
+        if self.font is None:
+            return None
+        try:
+            self.tex_image = self.font.read_texture()
+        except ValueError as e:
+            return str(e)
+        if self.zoom > self._max_zoom():   # a larger texture than before: keep memory sane
+            self.zoom = self._max_zoom()
+            self.zoom_var.set(self.zoom)
+        return None
+
+    def import_texture(self):
+        """Replace the texture inside the .bin with an image file (same size)."""
+        if self.font is None:
+            messagebox.showinfo("No Data", "Please open default.bin first")
+            return
         path = filedialog.askopenfilename(
-            title="Open Texture",
+            title="Import Texture",
             filetypes=[("Images", "*.png *.PNG *.bmp *.BMP"), ("All files", "*")],
         )
-        if path:
-            self.load_texture(path)
-
-    def load_texture(self, path):
-        """Load a texture image. Returns True on success; failures are reported."""
+        if not path:
+            return
         try:
             with Image.open(path) as img:
-                if img.format not in ("PNG", "BMP"):
-                    messagebox.showwarning(
-                        "Texture Format Warning",
-                        f"Image format '{img.format}' may not be supported. PNG or BMP recommended."
-                    )
-                if img.width > 1024 or img.height > 1024:
-                    messagebox.showwarning(
-                        "Texture Size Warning",
-                        f"Image dimensions ({img.width}x{img.height}) are very large. This may cause performance issues."
-                    )
-                tex_image = img.convert("RGB")
+                image = img.convert("L")
         except EXPECTED_LOAD_ERRORS as e:
-            messagebox.showerror("Texture Loading Error", str(e))
-            return False
+            messagebox.showerror("Import Error", str(e))
+            return
         except Exception as e:
-            self._report_unexpected_error("Critical Texture Loading Error", e)
+            self._report_unexpected_error("Critical Import Error", e)
+            return
+        self._apply_texture(image, os.path.basename(path))
+
+    def paste_texture(self):
+        """Replace the texture inside the .bin with the image on the clipboard."""
+        if self.font is None:
+            messagebox.showinfo("No Data", "Please open default.bin first")
+            return
+        try:
+            image = paste_image()
+        except ClipboardError as e:
+            messagebox.showerror("Clipboard Error", str(e))
+            return
+        if image is None:
+            messagebox.showinfo("Nothing to Import", "The clipboard does not contain an image.")
+            return
+        self._apply_texture(image, "the clipboard")
+
+    def _apply_texture(self, image, source):
+        try:
+            self.font.replace_texture(image)
+        except EXPECTED_LOAD_ERRORS as e:
+            messagebox.showerror("Import Error", str(e))
             return False
-        self.tex_image = tex_image
-        self._tex_photo_zoom = None      # force the scaled copy to be rebuilt
+        self._load_embedded_texture()
         self._redraw_canvas()
-        self.status_var.set(
-            f"Texture loaded: {os.path.basename(path)} ({tex_image.width}x{tex_image.height})"
-        )
+        self._mark_modified(f"Texture imported from {source}")
         return True
 
-    def load_paths(self, bin_path, tex_path=None):
-        """Load files given on the command line (missing paths are reported)."""
-        for path, loader in ((bin_path, self.load_bin), (tex_path, self.load_texture)):
-            if path is None:
-                continue
-            if os.path.exists(path):
-                loader(path)
-            else:
-                self.status_var.set(f"File not found: {path}")
+    def export_texture(self):
+        """Save the texture of the .bin as a PNG (Gray8)."""
+        if self.font is None:
+            messagebox.showinfo("No Data", "Please open default.bin first")
+            return
+        path = filedialog.asksaveasfilename(
+            title="Export Texture",
+            defaultextension=".png",
+            filetypes=[("PNG files", "*.png *.PNG"), ("All files", "*")],
+        )
+        if not path:
+            return
+        try:
+            self.font.read_texture().save(path, format="PNG")
+        except (ValueError, OSError) as e:
+            messagebox.showerror("Export Error", str(e))
+            return
+        self.status_var.set(f"Texture exported: {path}")
+
+    def copy_texture(self):
+        """Put the texture of the .bin on the clipboard."""
+        if self.font is None:
+            messagebox.showinfo("No Data", "Please open default.bin first")
+            return
+        try:
+            copy_image(self.font.read_texture(), owner=self.root)
+        except (ValueError, OSError) as e:        # ClipboardError is an OSError
+            messagebox.showerror("Clipboard Error", str(e))
+            return
+        self.status_var.set("Texture copied to the clipboard")
+
+    # Ctrl+C / Ctrl+V act on the texture - except while typing in a text field,
+    # where they keep copying/pasting text.
+    _TEXT_WIDGETS = (tk.Entry, tk.Text, ttk.Entry, ttk.Combobox, ttk.Spinbox)
+
+    def _bind_shortcuts(self):
+        modifier = "Command" if sys.platform == "darwin" else "Control"
+        self.root.bind_all(f"<{modifier}-KeyPress>", self._on_shortcut)
+
+    @staticmethod
+    def _shortcut_letter(event):
+        """'c' / 'v' for the physical C / V key, also on non-Latin layouts (there
+        the keysym is e.g. Cyrillic_es, so the layout-independent keycode is used)."""
+        if len(event.keysym) == 1 and event.keysym.lower() in "cv":
+            return event.keysym.lower()
+        codes = {"win32": {67: "c", 86: "v"}, "darwin": {8: "c", 9: "v"}}.get(
+            sys.platform, {54: "c", 55: "v"})
+        return codes.get(event.keycode)
+
+    def _on_shortcut(self, event):
+        letter = self._shortcut_letter(event)
+        if letter is None:
+            return None
+        try:
+            focus = self.root.focus_get()
+        except (KeyError, tk.TclError):
+            focus = None
+        if isinstance(focus, self._TEXT_WIDGETS):
+            return None                          # let the text field handle it
+        (self.copy_texture if letter == "c" else self.paste_texture)()
+        return "break"
+
+    def load_paths(self, bin_path):
+        """Load the file given on the command line (a missing path is reported)."""
+        if os.path.exists(bin_path):
+            self.load_bin(bin_path)
+        else:
+            self.status_var.set(f"File not found: {bin_path}")
 
     def on_profile_changed(self):
         if self.font is None:
@@ -1051,6 +1146,9 @@ class GlyphEditorApp:
         name = self.profile_var.get()
         self.font.profile_name = name
         self.font.profile = FONT_PROFILES[name]
+        problem = self._load_embedded_texture()       # the texture size depends on the profile
+        self.status_var.set(f"Texture not shown: {problem}" if problem else
+                            f"Profile {name}")
         # The pixel fields and every rectangle depend on the profile: rebuild them,
         # otherwise "Apply Changes" would mix old-profile pixels with the new profile.
         if self.selected_index is not None:
@@ -1063,7 +1161,7 @@ class GlyphEditorApp:
             value = int(self.zoom_var.get())
         except (tk.TclError, ValueError):       # empty / non-numeric text in the box
             value = self.zoom
-        new_zoom = max(MIN_ZOOM, min(MAX_ZOOM, value))
+        new_zoom = max(MIN_ZOOM, min(self._max_zoom(), value))
         self.zoom_var.set(new_zoom)
         if new_zoom != self.zoom:
             self.zoom = new_zoom
@@ -1513,7 +1611,6 @@ class GlyphEditorApp:
         self._mark_modified(status)
         self.char_mgmt_var.set("")
         self._refresh_glyph_list()
-        self._update_texture_offset()      # the file may have grown or shrunk
 
         target = glyph_index
         if action == "remove":
@@ -1600,6 +1697,7 @@ class GlyphEditorApp:
         return x, y
 
     def on_canvas_click(self, event):
+        self.canvas.focus_set()
         if self.font is None:
             return
         x, y = self._canvas_to_texpx(event)
