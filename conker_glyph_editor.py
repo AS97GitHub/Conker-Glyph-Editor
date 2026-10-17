@@ -645,8 +645,7 @@ class GlyphEditorApp:
         toolbar.pack(side=tk.TOP, fill=tk.X, padx=4, pady=(6, 2))
 
         ttk.Button(toolbar, text="Open .bin...", command=self.open_bin, padding=(8, 2)).pack(side=tk.LEFT, padx=(0, 3))
-        ttk.Button(toolbar, text="Import texture...", command=self.import_texture, padding=(8, 2)).pack(side=tk.LEFT, padx=(3, 0))
-
+        ttk.Button(toolbar, text="Import texture...", command=self.import_texture, padding=(8, 2)).pack(side=tk.LEFT, padx=(3, 3))
         ttk.Button(toolbar, text="Export texture...", command=self.export_texture, padding=(8, 2)).pack(side=tk.LEFT, padx=(3, 0))
 
         ttk.Label(toolbar, text="Profile:").pack(side=tk.LEFT, padx=(16, 2))
