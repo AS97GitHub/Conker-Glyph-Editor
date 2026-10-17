@@ -27,6 +27,8 @@
 ## Files
 
 - `conker_glyph_format.py` — library for reading and writing the font format and managing open-addressed character maps (required by the editor)
+- `conker_texture.py` — reads and replaces the Gray8 texture embedded in the .bin (used by the library and the editor)
+- `conker_clipboard.py` — image clipboard support (copy / paste the texture)
 - `conker_glyph_editor.py` — the main graphical editor (tkinter)
 
 All files must be located in the same folder.
@@ -54,6 +56,8 @@ Download the latest `.exe` version from the [Releases](https://github.com/AS97Gi
    pip install Pillow
    ```
 
+> On Linux, copying / pasting the texture with `Ctrl+C` / `Ctrl+V` additionally needs `xclip` (X11) or `wl-clipboard` (Wayland) installed.
+
 ## Running
 
 > ⚠️ On Windows, you can use either `python` or `py` to run the script, depending on your Python installation.
@@ -64,16 +68,19 @@ Download the latest `.exe` version from the [Releases](https://github.com/AS97Gi
 python conker_glyph_editor.py
 ```
 
-Or launch it directly with the font and texture files:
+Or launch it directly with the font file:
 
 ```bash
-python conker_glyph_editor.py path\to\default.bin path\to\texture.png
+python conker_glyph_editor.py path\to\default.bin
 ```
 
 ## Usage
 
-1. **"Open .bin..."** — select a font file (for example, `default.bin` from `ConkerFont`). The **profile** (`ConkerFont` / `ConkerFontJapanese` / `FrontendTitle` / `FrontendTitleJapanese`) is **detected automatically** from a byte signature in the file and the drop-down updates to match; you only need to pick a profile manually if you want to override the detected one.
-2. **"Open Texture..."** — select the extracted texture for the same font (BMP or PNG, for example one extracted with CrystalTile2, ImageHeat, or your own export).
+1. **"Open .bin..."** — select a font file (for example, `default.bin` from `ConkerFont`). The **profile** (`ConkerFont` / `ConkerFontJapanese` / `FrontendTitle` / `FrontendTitleJapanese`) is **detected automatically** from a byte signature in the file and the drop-down updates to match; you only need to pick a profile manually if you want to override the detected one. The texture is read out of the .bin itself and shown on the canvas right away.
+2. **Texture:** the texture lives inside the .bin.
+   - **"Export texture..."** — save it as a PNG (Gray8).
+   - **"Import texture..."** — replace it with a PNG/BMP of exactly the same size; the change is written when you save the .bin.
+   - **Ctrl+C** copies the texture to the clipboard, **Ctrl+V** imports the clipboard image as the new texture (the shortcuts do not apply while you type in a text field).
 3. **Glyphs / Charmap Tabs:** Select a glyph by its index or search assigned characters in the Charmap tab. The selected glyph is highlighted on the texture with a light blue rectangle and corner handles. The Charmap tab also shows the raw empty slots of the fixed charmap hash table.
 4. **Visual & Property Editing:**
    - Drag a corner handle to resize the glyph rectangle (`x0/y0/x1/y1`).
@@ -93,42 +100,6 @@ python conker_glyph_editor.py path\to\default.bin path\to\texture.png
    - **"Save (overwrite)"** — overwrite the open file.
 
 The editor safely modifies the glyph records and rebuilds the fixed 2048-slot hash table without interrupting probe chains or corrupting unrelated file regions. When glyphs are added or deleted, the whole container is re-laid-out (charmap, alignment padding, texture resource, metadata, section sizes) and the header checksum plus the charmap probe limit are brought up to date on save, so a saved file is always one the game accepts.
-
-## Extracting the texture with CrystalTile2
-
-To open the font texture in **CrystalTile2**:
-
-1. Open the font file in CrystalTile2.
-2. Use the following settings:
-
-**Default setting**
-
-* **Offset:**
-
-  * `3458` — `ConkerFont`
-  * `79F8` — `ConkerFontJapanese`
-  * `2EFC` — `FrontendTitle`
-  * `407C` — `FrontendTitleJapanese`
-
-**Tile property**
-
-* **Width / Height:**
-
-  * `256×240` — `ConkerFont`
-  * `1024×772` — `ConkerFontJapanese`
-  * `512×203` — `FrontendTitle`
-  * `1024×335` — `FrontendTitleJapanese`
-
-* **Tile form:** `GBA 8bpp`
-
-**Palette**
-
-* **Palette:** `Gray DIVISION`
-
-3. After applying these settings, export the texture as a **BMP** or **PNG** file.
-4. Open the exported texture in **Conker Glyph Editor** using **"Open Texture..."**.
-
-> **Tip:** For editing the texture, it is recommended to copy it directly from the CrystalTile2 preview and paste it into Photoshop. This preserves the texture's appearance as displayed in CrystalTile2.
 
 ## Important Note
 
