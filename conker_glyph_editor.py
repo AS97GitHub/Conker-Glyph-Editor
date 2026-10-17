@@ -1841,8 +1841,8 @@ class GlyphEditorApp:
 def main():
     root = tk.Tk()
     app = GlyphEditorApp(root)
-    if len(sys.argv) >= 2:          # optional: <default.bin> [texture]
-        root.after_idle(app.load_paths, *sys.argv[1:3])
+    if len(sys.argv) >= 2:          # optional: <default.bin>
+        root.after_idle(app.load_paths, sys.argv[1])
     root.mainloop()
 
 
