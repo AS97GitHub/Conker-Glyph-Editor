@@ -56,6 +56,16 @@ GLYPH_ARRAY_PTR_FIELD = 0x4F0            # -> glyph array
 # ConkerFont and FrontendTitle, 34 for ConkerFontJapanese), so an entry placed
 # deeper than this is never found.  save() keeps it large enough.
 CHARMAP_MAX_PROBES_FIELD = 0x4E4
+# Texture dimensions are stored in three places: the font object (two uint16 here),
+# the 'texture' resource (the same pair at +0x2C) and the .gpu size (W*H, in the header
+# twice and in the resource descriptor table).  Nothing else depends on them.
+TEXTURE_DIMS_FIELD = 0x500
+TEXTURE_RES_DIMS_OFFSET = 0x2C
+# The textures are linear Gray8 (all four shipped heights are not powers of two, so
+# they cannot be swizzled); linear Xbox textures need a pitch (= width) that is a
+# multiple of 64 bytes.  4096 is the GPU's largest texture side.
+TEXTURE_WIDTH_ALIGNMENT = 64
+MAX_TEXTURE_SIDE = 4096
 # Behind the 2048 charmap slots: FFFFFFFF, zero padding up to a 32-byte boundary
 # (relative to .data), the 'texture' resource (0x58 bytes), the metadata strings and
 # a table of resource descriptors:  [1][0][E] | 010502000000 [T][0x58] |
@@ -74,7 +84,7 @@ HEADER_CODE_FIELD = 0x4D8
 
 # Glyph rectangle coordinates (x0/x1/y0/y1_raw) are uint16 values in a
 # 0..16384 space: raw = (pixel - offset) * 16384 / texture_size (see
-# FONT_PROFILES).  A real rectangle therefore never exceeds ~16384 (largest
+# UV_RANGE).  A real rectangle therefore never exceeds ~16384 (largest
 # value seen in the four shipped fonts: 16376).
 # "Special" glyphs (e.g. space) store a mirrored, negative-looking pair
 # instead: x1 = 65536 - x0 and y1 = 65536 - y0 as uint16, e.g. (32, 65504,
@@ -85,24 +95,14 @@ HEADER_CODE_FIELD = 0x4D8
 # constant taken from the game engine itself.
 SPECIAL_GLYPH_RAW_THRESHOLD = 60000
 
-# Calibration parameters per font
+# Rectangle coordinates are normalised: raw = (pixel - offset) * UV_RANGE / texture
+# size.  The texture size is therefore NOT a property of the font profile - it is read
+# from the file (a font may carry a larger texture than the original, see
+# ConkerFont.replace_texture).  The profile only carries the pixel offsets.
+UV_RANGE = 16384
 FONT_PROFILES = {
-    "ConkerFont": {
-        "TEX_WIDTH": 256, "TEX_HEIGHT": 240,
-        "X_DIV": 16384 / 256, "Y_DIV": 16384 / 240, "X_OFFSET": -0.5, "Y_OFFSET": -0.5,
-    },
-    "ConkerFontJapanese": {
-        "TEX_WIDTH": 1024, "TEX_HEIGHT": 772,
-        "X_DIV": 16384 / 1024, "Y_DIV": 16384 / 772, "X_OFFSET": -0.5, "Y_OFFSET": -0.5,
-    },
-    "FrontendTitle": {
-        "TEX_WIDTH": 512, "TEX_HEIGHT": 203,
-        "X_DIV": 16384 / 512, "Y_DIV": 16384 / 203, "X_OFFSET": -0.5, "Y_OFFSET": -0.5,
-    },
-    "FrontendTitleJapanese": {
-        "TEX_WIDTH": 1024, "TEX_HEIGHT": 335,
-        "X_DIV": 16384 / 1024, "Y_DIV": 16384 / 335, "X_OFFSET": -0.5, "Y_OFFSET": -0.5,
-    },
+    name: {"X_OFFSET": -0.5, "Y_OFFSET": -0.5}
+    for name in ("ConkerFont", "ConkerFontJapanese", "FrontendTitle", "FrontendTitleJapanese")
 }
 
 # Profile detection signatures: byte patterns at specific offsets
@@ -344,8 +344,8 @@ class ConkerFont:
 
         if self.data[0:4] != b"CAFF":
             raise ValueError(f"{path}: does not look like a CAFF container (magic={self.data[0:4]!r})")
-        if len(self.data) < GLYPH_COUNT_HEADER_OFFSET + 4:
-            raise ValueError(f"{path}: truncated file (no glyph count in header)")
+        if len(self.data) < GLYPH_TABLE_OFFSET:
+            raise ValueError(f"{path}: truncated file (no font object in the header)")
 
         detected = None
         if profile_name is None:
@@ -357,6 +357,8 @@ class ConkerFont:
         self.profile_name = profile_name
         self.profile = FONT_PROFILES[profile_name]
         self.profile_autodetected = detected is not None
+        if not all(self.texture_size):
+            raise ValueError(f"{path}: the texture size in the header is zero")
 
         self._reparse()
 
@@ -462,10 +464,9 @@ class ConkerFont:
 
     @property
     def texture_size(self):
-        """(width, height) of the texture in pixels, from the font profile.
-        The texture is a single Gray8 plane: W*H bytes."""
-        p = self.profile
-        return (p["TEX_WIDTH"], p["TEX_HEIGHT"])
+        """(width, height) of the texture in pixels, read from the font object.
+        The texture is a single linear Gray8 plane: W*H bytes."""
+        return struct.unpack_from("<HH", self.data, TEXTURE_DIMS_FIELD)
 
     @property
     def gpu_size(self):
@@ -473,14 +474,13 @@ class ConkerFont:
         return self._u32(SECTION_GPU_SIZE_FIELDS[0])
 
     def _check_texture_layout(self):
-        """Refuse to touch the texture pixels if the .gpu section is not exactly
-        one Gray8 plane of the profile's size (a different size would change the
-        coordinate scale of every glyph rectangle and is not supported)."""
+        """Refuse to touch the texture if the places that describe its size
+        disagree with each other (a file this tool does not understand)."""
         w, h = self.texture_size
         if self.gpu_size != w * h:
             raise ValueError(
-                f"the .gpu section is {self.gpu_size} bytes, but profile {self.profile_name!r} "
-                f"expects a {w}x{h} texture ({w * h} bytes) - pick the matching profile"
+                f"the .gpu section is {self.gpu_size} bytes, but the font header says the "
+                f"texture is {w}x{h} ({w * h} bytes)"
             )
         if self.gpu_size != self._u32(SECTION_GPU_SIZE_FIELDS[1]):
             raise ValueError("the two .gpu size fields disagree")
@@ -494,25 +494,96 @@ class ConkerFont:
         """Extract the texture as a PIL image (mode 'L', Gray8).
 
         The pixels are the whole .gpu section: W*H consecutive grayscale bytes,
-        no header, no padding (W*H is a multiple of 32 for every shipped font).
-        The section starts right behind .data (texture_offset), which is not
-        32-byte aligned in the file.  Implemented in conker_texture.read_gray8()."""
+        no header, no padding.  The section starts right behind .data
+        (texture_offset), which is not 32-byte aligned in the file.
+        Implemented in conker_texture.read_gray8()."""
         self._check_texture_layout()
         return read_gray8(self.data, self.texture_offset, *self.texture_size)
 
-    def replace_texture(self, image):
-        """Replace the texture pixels in-memory with ``image`` (a PIL image of
-        exactly the profile's size; anything else is converted to grayscale).
+    @staticmethod
+    def check_texture_size(width, height):
+        """Raise ValueError unless a texture of this size is possible (see
+        replace_texture)."""
+        if width % TEXTURE_WIDTH_ALIGNMENT or not (0 < width <= MAX_TEXTURE_SIDE
+                                                   and 0 < height <= MAX_TEXTURE_SIDE):
+            raise ValueError(
+                f"a texture of {width}x{height} is not possible: the width must be a multiple of "
+                f"{TEXTURE_WIDTH_ALIGNMENT} and both sides at most {MAX_TEXTURE_SIDE}"
+            )
 
-        The .gpu section size is left untouched - only same-size replacements
-        are possible. Changes are written into self.data; call save() to write
-        the file. The header checksum does not cover the texture, so it stays
-        valid."""
+    def replace_texture(self, image, keep_pixels=False):
+        """Replace the texture with ``image`` in memory (anything that is not
+        grayscale is converted); call save() to write the file.
+
+        An image of the current size just replaces the pixels.  Any other size
+        resizes the .gpu section (it is the last part of the file, so nothing else
+        moves) and updates the size in the font object, the texture resource, the
+        header and the descriptor table.  Larger textures, also with other
+        proportions, are accepted by the game (confirmed in game).
+
+        What happens to the glyph rectangles is up to ``keep_pixels``: they are
+        normalised (raw = pixel * 16384 / texture size), so
+        - False: they stay as they are and scale with the texture - right for an
+          enlarged version of the same atlas;
+        - True: they are recomputed so they cover the same pixels of the picture -
+          right when the glyphs keep their size and place and the picture just has
+          more room (raises ValueError if some rectangle would fall outside a smaller
+          texture).
+        Glyph Width/Height, bearings and advance are on-screen units and are never
+        touched, so text keeps its size either way.
+
+        Width must be a multiple of TEXTURE_WIDTH_ALIGNMENT, both sides at most
+        MAX_TEXTURE_SIDE.  The header checksum covers the size fields; save()
+        redoes it."""
         self._check_texture_layout()
-        try:
-            write_gray8(self.data, self.texture_offset, image, *self.texture_size)
-        except ValueError as e:
-            raise ValueError(f"{e} (profile {self.profile_name!r})") from e
+        w, h = image.size
+        if (w, h) == self.texture_size:
+            write_gray8(self.data, self.texture_offset, image, w, h)
+            return
+        self.check_texture_size(w, h)
+        plan = self._plan_layout()                 # refuses a layout it does not know
+        dims_in_resource = plan["res_start"] + TEXTURE_RES_DIMS_OFFSET
+        old_w, old_h = self.texture_size
+        if struct.unpack_from("<HH", self.data, dims_in_resource) != (old_w, old_h):
+            raise ValueError("unsupported file layout: the texture resource does not hold the texture size")
+
+        data_end = plan["data_off"] + plan["data_size"]
+        new = self.data[:data_end] + image.convert("L").tobytes()      # .gpu is the last section
+        for field in SECTION_GPU_SIZE_FIELDS:
+            struct.pack_into("<I", new, field, w * h)
+        struct.pack_into("<I", new, plan["e_pos"] + 28, w * h)         # descriptor [0][gpu size]
+        struct.pack_into("<HH", new, dims_in_resource, w, h)
+        struct.pack_into("<HH", new, TEXTURE_DIMS_FIELD, w, h)
+        if keep_pixels:
+            self._rescale_rectangles(new, (old_w, old_h), (w, h))
+        self.data = new
+        if keep_pixels:
+            self._reparse()
+
+    def _rescale_rectangles(self, buf, old_size, new_size):
+        """Rewrite the rectangle of every drawable glyph in ``buf`` so it covers the
+        same pixels in a texture of ``new_size``: raw' = raw * old / new per axis (the
+        half-pixel offset cancels out).  Raises ValueError, changing nothing, if a
+        rectangle would lie outside the new texture."""
+        (ow, oh), (nw, nh) = old_size, new_size
+        edits, outside = [], 0
+        for g in self.glyphs:
+            if g.is_special:
+                continue
+            x0, x1 = (round(v * ow / nw) for v in (g.x0_raw, g.x1_raw))
+            y0, y1 = (round(v * oh / nh) for v in (g.y0_raw, g.y1_raw))
+            # pixel = raw * size / UV_RANGE + offset; the editor allows up to the texture size
+            if (max(x0, x1) > UV_RANGE * (1 + 0.5 / nw) + 1
+                    or max(y0, y1) > UV_RANGE * (1 + 0.5 / nh) + 1):
+                outside += 1
+            edits.append((g.index, x0, x1, y0, y1))
+        if outside:
+            raise ValueError(
+                f"{outside} glyph rectangle(s) would lie outside the new {nw}x{nh} texture - "
+                "the texture is smaller than the area they cover"
+            )
+        for index, x0, x1, y0, y1 in edits:
+            struct.pack_into("<HHHH", buf, GLYPH_TABLE_OFFSET + index * GLYPH_REC_SIZE + 4, x0, x1, y0, y1)
 
     @property
     def checksum_ok(self):
@@ -1033,10 +1104,14 @@ class ConkerFont:
 
     # ---------- High-level helper functions ----------
 
-    def to_pixels(self, glyph):
+    def _pixel_scale(self):
+        """(x_div, y_div, x_off, y_off) for the texture the file actually has."""
+        w, h = self.texture_size
         p = self.profile
-        return glyph.to_pixels(p["X_DIV"], p["Y_DIV"], p["X_OFFSET"], p["Y_OFFSET"])
+        return UV_RANGE / w, UV_RANGE / h, p["X_OFFSET"], p["Y_OFFSET"]
+
+    def to_pixels(self, glyph):
+        return glyph.to_pixels(*self._pixel_scale())
 
     def set_pixels(self, glyph, x0, y0, x1, y1):
-        p = self.profile
-        glyph.set_from_pixels(x0, y0, x1, y1, p["X_DIV"], p["Y_DIV"], p["X_OFFSET"], p["Y_OFFSET"])
+        glyph.set_from_pixels(x0, y0, x1, y1, *self._pixel_scale())

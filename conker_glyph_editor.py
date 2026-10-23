@@ -19,7 +19,7 @@ import tkinter.font as tkfont
 from PIL import Image, ImageTk
 
 from conker_clipboard import copy_image, paste_image, ClipboardError
-from conker_glyph_format import ConkerFont, FONT_PROFILES
+from conker_glyph_format import ConkerFont
 
 
 HANDLE_SIZE = 6          # Size of corner handle box for dragging (in screen pixels)
@@ -645,17 +645,9 @@ class GlyphEditorApp:
         toolbar.pack(side=tk.TOP, fill=tk.X, padx=4, pady=(6, 2))
 
         ttk.Button(toolbar, text="Open .bin...", command=self.open_bin, padding=(8, 2)).pack(side=tk.LEFT, padx=(0, 3))
-        ttk.Button(toolbar, text="Import texture...", command=self.import_texture, padding=(8, 2)).pack(side=tk.LEFT, padx=(3, 3))
-        ttk.Button(toolbar, text="Export texture...", command=self.export_texture, padding=(8, 2)).pack(side=tk.LEFT, padx=(3, 0))
+        ttk.Button(toolbar, text="Import texture...", command=self.import_texture, padding=(8, 2)).pack(side=tk.LEFT, padx=(3, 0))
 
-        ttk.Label(toolbar, text="Profile:").pack(side=tk.LEFT, padx=(16, 2))
-        self.profile_var = tk.StringVar(value="ConkerFont")
-        profile_combo = ttk.Combobox(
-            toolbar, textvariable=self.profile_var,
-            values=list(FONT_PROFILES.keys()), state="readonly", width=20
-        )
-        profile_combo.pack(side=tk.LEFT)
-        profile_combo.bind("<<ComboboxSelected>>", lambda e: self.on_profile_changed())
+        ttk.Button(toolbar, text="Export texture...", command=self.export_texture, padding=(8, 2)).pack(side=tk.LEFT, padx=(3, 0))
 
         ttk.Label(toolbar, text="Zoom:").pack(side=tk.LEFT, padx=(16, 2))
         self.zoom_var = tk.IntVar(value=DEFAULT_ZOOM)
@@ -889,7 +881,7 @@ class GlyphEditorApp:
             "**replace:** reassigns the character chosen in Old Char to point to New Char instead.\n"
             "**new_glyph:** appends a new glyph at the end of the glyph table as a copy of the selected one, so it is visible and editable right away. New Char is optional and maps a character to the new glyph. The file grows: everything behind the glyph table moves and the file's sizes, offsets and checksum are updated automatically.\n"
             "**delete_glyph:** removes the selected glyph: its characters are unmapped and every later glyph moves down by one index. The file shrinks and everything behind the glyph table moves up. Asks for confirmation first; cannot be undone once saved.\n"
-            "**Import texture:** replaces the texture inside the .bin with a PNG/BMP of exactly the same size; it is written when you save. **Ctrl+V** imports the image from the clipboard.\n"
+            "**Import texture:** replaces the texture inside the .bin with a PNG/BMP; it is written when you save. The picture may be larger (or smaller) than the current texture: width a multiple of 64, up to 4096. You are asked what happens to the glyph rectangles: **Yes** keeps them on the same pixels (the glyphs keep their size and place, the picture just has more room), **No** scales them with the texture (an enlarged version of the same atlas). Glyph Width/Height, bearings and advance are never changed, so text keeps its on-screen size. **Ctrl+V** imports the image from the clipboard.\n"
             "**Export texture:** saves the texture of the .bin as a PNG. **Ctrl+C** copies it to the clipboard. (The shortcuts do not apply while you type in a text field.)\n\n"
             "**VERIFIED IN-GAME (via XEMU):**\n"
             "**Glyph Width/Height:** physical glyph size. Changing these visibly stretches/quashes the glyph on screen along X/Y. Stored as **TWO** independent bytes, not one number.\n"
@@ -961,7 +953,6 @@ class GlyphEditorApp:
                           and self.selected_index is not None
                           and self.selected_index < len(font.glyphs))
         self.font = font
-        self.profile_var.set(font.profile_name)
         self.current_file_path = path
         self.unsaved_changes = False
 
@@ -985,9 +976,7 @@ class GlyphEditorApp:
                 "editor after the glyph table was resized).\n\nIt is corrected "
                 "automatically when you save."
             )
-        how = "auto-detected" if font.profile_autodetected else "not detected, default used"
-        status = (f"Loaded {os.path.basename(path)}: {font.glyph_count} glyphs, "
-                  f"profile {font.profile_name} ({how})")
+        status = f"Loaded {os.path.basename(path)}: {font.glyph_count} glyphs"
         if problem:
             status += f" - texture not shown: {problem}"
         self.status_var.set(status)
@@ -1007,8 +996,8 @@ class GlyphEditorApp:
 
     def _load_embedded_texture(self):
         """(Re)read the texture out of the .bin for display. Returns None on
-        success, otherwise a short reason (e.g. the profile's texture size does not
-        match the file) - the glyph editing keeps working without a picture."""
+        success, otherwise a short reason (the file's size fields disagree) - the
+        glyph editing keeps working without a picture."""
         self._tex_photo_zoom = None        # force the scaled copy to be rebuilt
         self.tex_image = None
         if self.font is None:
@@ -1060,14 +1049,48 @@ class GlyphEditorApp:
         self._apply_texture(image, "the clipboard")
 
     def _apply_texture(self, image, source):
+        old_w, old_h = self.font.texture_size
+        new_w, new_h = image.size
+        resized = (new_w, new_h) != (old_w, old_h)
+        keep_pixels = False
+        if resized:
+            try:
+                self.font.check_texture_size(new_w, new_h)     # no point asking about an impossible size
+            except ValueError as err:
+                messagebox.showerror("Import Error", str(err))
+                return False
+            skew = abs(new_w / new_h - old_w / old_h) > 0.01 * old_w / old_h
+            answer = messagebox.askyesnocancel(
+                "Glyph Rectangles",
+                f"The new texture is {new_w}x{new_h} (now {old_w}x{old_h}).\n\n"
+                "Yes - keep the glyph rectangles on the same pixels of the picture. Use this "
+                "when the glyphs keep their size and place and the picture just has more room.\n\n"
+                "No - let the rectangles scale with the texture. Use this when the whole "
+                "picture is an enlarged version of the same atlas."
+                + (" (The proportions differ, so No stretches the rectangles.)" if skew else "")
+                + "\n\nGlyph Width/Height, bearings and advance are not changed either way.",
+            )
+            if answer is None:                 # Cancel
+                return False
+            keep_pixels = answer
         try:
-            self.font.replace_texture(image)
-        except EXPECTED_LOAD_ERRORS as e:
-            messagebox.showerror("Import Error", str(e))
+            self.font.replace_texture(image, keep_pixels=keep_pixels)
+        except EXPECTED_LOAD_ERRORS as err:
+            messagebox.showerror("Import Error", str(err))
             return False
-        self._load_embedded_texture()
-        self._redraw_canvas()
-        self._mark_modified(f"Texture imported from {source}")
+        if resized:                        # keep the canvas about as large as it was
+            self.zoom = max(MIN_ZOOM, round(self.zoom * old_w / new_w))
+            self.zoom_var.set(self.zoom)
+        self._load_embedded_texture()      # also caps the zoom for big textures
+        if self.selected_index is not None:    # pixel coordinates may be different now
+            self.select_glyph(self.selected_index, preferred_code=self.selected_code)
+        else:
+            self._redraw_canvas()
+        note = ""
+        if resized:
+            note = (f" ({old_w}x{old_h} -> {new_w}x{new_h}, rectangles "
+                    f"{'kept on the same pixels' if keep_pixels else 'scaled with the texture'})")
+        self._mark_modified(f"Texture imported from {source}{note}")
         return True
 
     def export_texture(self):
@@ -1138,22 +1161,6 @@ class GlyphEditorApp:
             self.load_bin(bin_path)
         else:
             self.status_var.set(f"File not found: {bin_path}")
-
-    def on_profile_changed(self):
-        if self.font is None:
-            return
-        name = self.profile_var.get()
-        self.font.profile_name = name
-        self.font.profile = FONT_PROFILES[name]
-        problem = self._load_embedded_texture()       # the texture size depends on the profile
-        self.status_var.set(f"Texture not shown: {problem}" if problem else
-                            f"Profile {name}")
-        # The pixel fields and every rectangle depend on the profile: rebuild them,
-        # otherwise "Apply Changes" would mix old-profile pixels with the new profile.
-        if self.selected_index is not None:
-            self.select_glyph(self.selected_index, preferred_code=self.selected_code)
-        else:
-            self._redraw_canvas()
 
     def on_zoom_changed(self):
         try:
@@ -1841,8 +1848,8 @@ class GlyphEditorApp:
 def main():
     root = tk.Tk()
     app = GlyphEditorApp(root)
-    if len(sys.argv) >= 2:          # optional: <default.bin>
-        root.after_idle(app.load_paths, sys.argv[1])
+    if len(sys.argv) >= 2:          # optional: <default.bin> [texture]
+        root.after_idle(app.load_paths, *sys.argv[1:3])
     root.mainloop()
 
 

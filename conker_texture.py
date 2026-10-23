@@ -6,9 +6,11 @@ The texture is the whole .gpu section at the end of the file: W*H consecutive
 grayscale bytes, no header and no padding (W*H is a multiple of 32 for every
 shipped font).  The section starts right behind the .data section; that offset is
 not 32-byte aligned in the file and it moves whenever glyphs are added or deleted,
-so it is always taken from the file's own header (never hardcoded).  Replacing is
-in place; only an image of exactly the same size is accepted, because the .gpu
-size is recorded in the CAFF header.
+so it is always taken from the file's own header (never hardcoded).  The size of
+the texture is read from the file too: FontTexture.replace() accepts an image of
+another size (width a multiple of 64, up to 4096) and resizes the .gpu section; the
+glyph rectangles are normalised, so the text keeps its on-screen size and just gets
+sharper.  (The raw-buffer helpers below only do same-size, in-place writes.)
 
 Two ways to use it:
 
@@ -111,10 +113,12 @@ class FontTexture:
         """Extract the texture as a PIL image (mode 'L', Gray8)."""
         return self.font.read_texture()
 
-    def replace(self, image):
-        """Replace the texture pixels in memory with ``image`` (converted to
-        grayscale; must be exactly the texture's size). Call save() to write."""
-        self.font.replace_texture(image)
+    def replace(self, image, keep_pixels=False):
+        """Replace the texture in memory with ``image`` (converted to grayscale; any
+        size the format allows). ``keep_pixels`` decides what happens to the glyph
+        rectangles when the size changes - see ConkerFont.replace_texture. Call save()
+        to write."""
+        self.font.replace_texture(image, keep_pixels=keep_pixels)
 
     def extract_png(self, out_path):
         """Convenience: extract the texture straight to a PNG file."""
