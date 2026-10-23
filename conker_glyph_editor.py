@@ -645,14 +645,13 @@ class GlyphEditorApp:
         toolbar.pack(side=tk.TOP, fill=tk.X, padx=4, pady=(6, 2))
 
         ttk.Button(toolbar, text="Open .bin...", command=self.open_bin, padding=(8, 2)).pack(side=tk.LEFT, padx=(0, 3))
-        ttk.Button(toolbar, text="Import texture...", command=self.import_texture, padding=(8, 2)).pack(side=tk.LEFT, padx=(3, 0))
-
+        ttk.Button(toolbar, text="Import texture...", command=self.import_texture, padding=(8, 2)).pack(side=tk.LEFT, padx=(3, 3))
         ttk.Button(toolbar, text="Export texture...", command=self.export_texture, padding=(8, 2)).pack(side=tk.LEFT, padx=(3, 0))
 
         ttk.Label(toolbar, text="Zoom:").pack(side=tk.LEFT, padx=(16, 2))
         self.zoom_var = tk.IntVar(value=DEFAULT_ZOOM)
         zoom_spin = ttk.Spinbox(toolbar, from_=MIN_ZOOM, to=MAX_ZOOM, textvariable=self.zoom_var,
-                                 width=4, command=self.on_zoom_changed)
+                                 width=2, command=self.on_zoom_changed)
         zoom_spin.pack(side=tk.LEFT)
         for sequence in ("<Return>", "<FocusOut>"):      # typed values count too
             zoom_spin.bind(sequence, lambda e: self.on_zoom_changed())
