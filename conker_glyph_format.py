@@ -81,6 +81,17 @@ DESCRIPTOR_HEADER = bytes.fromhex("010502000000")
 # map kanji above it).  Its purpose is not known; it may be the character shown for
 # unknown symbols, so the editor warns before the glyph for it is removed.
 HEADER_CODE_FIELD = 0x4D8
+# Two more font-wide values sit in the font object (uint32 each):
+#   0x4FC - the width of the space character, in the same on-screen units as a glyph's
+#           advance.  CONFIRMED IN-GAME: +20 widens the space, -5 narrows it, while the
+#           advance (byte14) of the U+0020 glyph itself has NO effect - the game takes
+#           the width of the space only from this field.  In all four shipped fonts the
+#           two are equal (9, 9, 9, 8).
+#   0x4F8 - 37 / 47 / 35 / 45 in the shipped fonts, with no simple relation to the glyph
+#           metrics.  Changing it showed NO effect in game so far (it may be a line
+#           spacing, which a single line of text cannot show); purpose still unknown.
+SPACE_WIDTH_FIELD = 0x4FC
+SPACE_CODE = 0x20
 
 # Glyph rectangle coordinates (x0/x1/y0/y1_raw) are uint16 values in a
 # 0..16384 space: raw = (pixel - offset) * 16384 / texture_size (see
@@ -589,6 +600,23 @@ class ConkerFont:
     def checksum_ok(self):
         """True if the stored header checksum matches the header."""
         return self._u32(CAFF_CHECKSUM_FIELD) == caff_checksum(self.data)
+
+    @property
+    def space_width(self):
+        """Width of the space character (the font-wide value, see SPACE_WIDTH_FIELD)."""
+        return self._u32(SPACE_WIDTH_FIELD)
+
+    def set_space_width(self, width):
+        """Set the width of the space character (an integer from 0 to 255, like an
+        advance).  Only the font-wide field is written; the space glyph's own advance is
+        ignored by the game (see SPACE_WIDTH_FIELD)."""
+        if not (isinstance(width, int) and 0 <= width <= 255):
+            raise ValueError("Space Width must be an integer between 0 and 255")
+        struct.pack_into("<I", self.data, SPACE_WIDTH_FIELD, width)
+
+    def is_space_glyph(self, glyph_index):
+        """True for the glyph U+0020 maps to - the one whose own advance the game ignores."""
+        return self.charmap.get(SPACE_CODE) == glyph_index
 
     @property
     def header_code(self):

@@ -774,6 +774,7 @@ class GlyphEditorApp:
         props.pack(fill=tk.X, padx=(0, 4), pady=4)
 
         self.prop_vars = {}
+        self.prop_labels = {}
         prop_fields = [
             ("index", "Index"),
             ("x0", "Start X"),
@@ -789,7 +790,9 @@ class GlyphEditorApp:
         for key, label in prop_fields:
             row = ttk.Frame(props)
             row.pack(fill=tk.X, pady=(2, 1))
-            ttk.Label(row, text=label + ":", width=17, anchor="e").pack(side=tk.LEFT, padx=(0, 2))
+            label_widget = ttk.Label(row, text=label + ":", width=17, anchor="e")
+            label_widget.pack(side=tk.LEFT, padx=(0, 2))
+            self.prop_labels[key] = label_widget
             var = tk.StringVar(value="")
             entry = ttk.Entry(row, textvariable=var, width=12)
             entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 2))
@@ -884,7 +887,7 @@ class GlyphEditorApp:
             "**Export texture:** saves the texture of the .bin as a PNG. **Ctrl+C** copies it to the clipboard. (The shortcuts do not apply while you type in a text field.)\n\n"
             "**VERIFIED IN-GAME (via XEMU):**\n"
             "**Glyph Width/Height:** physical glyph size. Changing these visibly stretches/quashes the glyph on screen along X/Y. Stored as **TWO** independent bytes, not one number.\n"
-            "**Advance Width:** horizontal step after this character - where the next one starts.\n"
+            "**Advance Width:** horizontal step after this character - where the next one starts. For the space glyph (U+0020) the field is shown as **Space Width**: the game takes the width of the space from a font-wide value and ignores the glyph's own advance (verified in game); the editor writes both.\n"
             "**X/Y Bearing:** offset of the glyph from the baseline. Negative X = left, positive X = right. Positive Y = lower, negative Y = higher. Shown/entered as **SIGNED** bytes (-128..127).\n\n"
             "Pixel-conversion formula (both X and Y) found empirically."
         )
@@ -1395,7 +1398,14 @@ class GlyphEditorApp:
         # byte14 CONFIRMED IN-GAME to be the real Advance Width - it determines
         # where the NEXT character starts, unlike the 'Unknown' hi/lo field above
         # which showed no visible effect when changed in isolation.
-        self.prop_vars["byte14"].set(str(g.byte14))
+        if self.font.is_space_glyph(index):
+            # The space has no rectangle and the game ignores its own advance (verified in
+            # game): the width of the space comes from a font-wide value, shown here.
+            self.prop_labels["byte14"].config(text="Space Width:")
+            self.prop_vars["byte14"].set(str(self.font.space_width))
+        else:
+            self.prop_labels["byte14"].config(text="Advance Width:")
+            self.prop_vars["byte14"].set(str(g.byte14))
 
         pixels = self.font.to_pixels(g)
         if pixels:
@@ -1441,6 +1451,7 @@ class GlyphEditorApp:
             return
         orig = self.font.glyphs[self.selected_index]
         g = orig.clone()
+        is_space = self.font.is_space_glyph(orig.index)
         try:
             # field1_lo and field1_hi are treated as two INDEPENDENT single bytes,
             # entered/displayed as SIGNED int8 (-128..127) - see select_glyph for why.
@@ -1461,7 +1472,8 @@ class GlyphEditorApp:
 
             byte14_val = int(self.prop_vars["byte14"].get())
             if not (0 <= byte14_val <= 255):
-                raise ValueError("Advance Width must be an integer between 0 and 255 (it's a single byte in the file)")
+                raise ValueError(f"{'Space' if is_space else 'Advance'} Width must be an integer "
+                                 "between 0 and 255 (it's a single byte in the file)")
             g.byte14 = byte14_val
 
             if not g.is_special:
@@ -1473,9 +1485,12 @@ class GlyphEditorApp:
             messagebox.showerror("Invalid Input", str(e))
             return
 
-        if g.same_data(orig):
+        space_changed = is_space and g.byte14 != self.font.space_width
+        if g.same_data(orig) and not space_changed:
             self.status_var.set(f"Glyph #{g.index}: no changes")
             return
+        if space_changed:                  # the font-wide value is what the game reads
+            self.font.set_space_width(g.byte14)
         self._commit_glyph_edit(g)
 
     def _update_old_char_combo(self):
