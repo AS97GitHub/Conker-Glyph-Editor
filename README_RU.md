@@ -91,9 +91,9 @@ python conker_glyph_editor.py путь\к\default.bin
    - Вручную редактируйте метрики на правой панели и нажимайте **"Apply Changes"**:
      - **X Offset / Y Offset** — задаёт смещение символа (знаковое, -128…127).
      - **Glyph Width / Glyph Height** — физический размер глифа на экране (растягивает/сжимает глиф по осям X/Y). В UI отображается stored -1.
-     - **Advance** — шаг до следующего символа (младший байт s16 advance). Для U+0020 игра берёт **Space Width** из Font Metrics.
-     - **Kerning** — s16; в оригинальных шрифтах всегда -1.
-     - **Ascent** — s16 в конце записи глифа (часто совпадает с высотой; отдельного эффекта на экране не подтверждено).
+     - **Advance** — шаг до следующего символа (младший байт advance (int16)). Для U+0020 игра берёт **Space Width** из Font Metrics.
+     - **Kerning** — в оригинальных шрифтах всегда -1.
+     - **Ascent** — в конце записи глифа (часто совпадает с высотой; отдельного эффекта на экране не подтверждено).
 5. **Font Metrics** (справа, на весь шрифт):
    - **Line Height**, **Space Width**, **Fallback** (например `U+25A1`).
    - Размер атласа и max probes — только для просмотра.
@@ -119,7 +119,7 @@ DIV   = 16384 / actual_texture_size_in_pixels
 OFFSET = -0.5   (все поставляемые профили)
 ```
 
-Запись глифа (18 байт, little-endian): `s8 x_offset`, `s8 y_offset`, `u8 width`, `u8 height`, `u16 u0,u1,v0,v1`, `s16 advance`, `s16 kerning`, `s16 ascent`.
+Запись глифа (18 байт, little-endian): `x_offset (int8)`, `y_offset (int8)`, `width (uint8)`, `height (uint8)`, `u0,u1,v0,v1 (uint16)`, `advance (int16)`, `kerning (int16)`, `ascent (int16)`.
 
 **X/Y Offset**, **Glyph Width/Height** и **Advance** **подтверждены в игре через XEMU**. **Kerning** в оригинале всегда -1; у **Ascent** отдельного эффекта на экране не подтверждено. Крупные правки проверяйте в игре.
 
