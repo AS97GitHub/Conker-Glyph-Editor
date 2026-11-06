@@ -91,9 +91,9 @@ python conker_glyph_editor.py path\to\default.bin
    - Edit fields on the right panel and click **"Apply Changes"**:
      - **X Offset / Y Offset** — character offset (signed -128…127).
      - **Glyph Width / Glyph Height** — physical on-screen size (also scales the atlas sample). UI shows stored value -1.
-     - **Advance** — horizontal step to the next character (lo byte of the glyph’s s16 advance). For U+0020 the game uses **Space Width** from Font Metrics instead.
-     - **Kerning** — s16; always -1 in shipped fonts.
-     - **Ascent** — s16 at the end of the glyph record (often tracks glyph height; no confirmed on-screen effect alone).
+     - **Advance** — horizontal step to the next character (lo byte of the glyph’s advance (int16)). For U+0020 the game uses **Space Width** from Font Metrics instead.
+     - **Kerning** — always -1 in shipped fonts.
+     - **Ascent** — at the end of the glyph record (often tracks glyph height; no confirmed on-screen effect alone).
 5. **Font Metrics** (right panel, font-wide):
    - **Line Height**, **Space Width**, **Fallback** code point (e.g. `U+25A1`).
    - Atlas size and max hash probes are shown read-only.
@@ -119,7 +119,7 @@ DIV   = 16384 / actual_texture_size_in_pixels
 OFFSET = -0.5   (all shipped profiles)
 ```
 
-Glyph record layout (18 bytes, little-endian): `s8 x_offset`, `s8 y_offset`, `u8 width`, `u8 height`, `u16 u0,u1,v0,v1`, `s16 advance`, `s16 kerning`, `s16 ascent`.
+Glyph record layout (18 bytes, little-endian): `x_offset (int8)`, `y_offset (int8)`, `width (uint8)`, `height (uint8)`, `u0,u1,v0,v1 (uint16)`, `advance (int16)`, `kerning (int16)`, `ascent (int16)`.
 
 **X/Y Offset**, **Glyph Width/Height**, and **Advance** are **confirmed in-game via XEMU**. **Kerning** is always -1 in shipped data; **Ascent** has no confirmed isolated on-screen effect. Verify large-scale changes in-game.
 
