@@ -76,43 +76,52 @@ python conker_glyph_editor.py path\to\default.bin
 
 ## Usage
 
-1. **"Open .bin..."** — select a font file (for example, `default.bin` from `ConkerFont`). The **profile** (`ConkerFont` / `ConkerFontJapanese` / `FrontendTitle` / `FrontendTitleJapanese`) is **detected automatically** from a byte signature in the file and the drop-down updates to match; you only need to pick a profile manually if you want to override the detected one. The texture is read out of the .bin itself and shown on the canvas right away.
-2. **Texture:** the texture lives inside the .bin.
+1. **"Open .bin..."** — select a font file (for example, `default.bin` from `ConkerFont`). The **profile** (`ConkerFont` / `ConkerFontJapanese` / `FrontendTitle` / `FrontendTitleJapanese`) is **detected automatically** from a byte signature in the file and the drop-down updates to match. The texture is read out of the .bin itself and shown on the canvas right away.
+2. **Texture:** the texture lives inside the .bin (linear Gray8).
    - **"Export texture..."** — save it as a PNG (Gray8).
-   - **"Import texture..."** — replace it with a PNG/BMP of exactly the same size; the change is written when you save the .bin.
+   - **"Import texture..."** — replace it with a PNG/BMP. Width must be a multiple of 64 (up to 4096). If the size changes, you are asked whether to **keep** glyph rectangles on the same pixels or **scale** them with the texture. The change is written when you save the .bin.
    - **Ctrl+C** copies the texture to the clipboard, **Ctrl+V** imports the clipboard image as the new texture (the shortcuts do not apply while you type in a text field).
-3. **Glyphs / Charmap Tabs:** Select a glyph by its index or search assigned characters in the Charmap tab. The selected glyph is highlighted on the texture with a light blue rectangle and corner handles. The Charmap tab also shows the raw empty slots of the fixed charmap hash table.
+3. **Left tabs — Glyphs / Charmap / Help:**
+   - **Glyphs** — list of glyphs as `index  char=… (U+XXXX)`. Select by index; the selected glyph is highlighted on the texture with a light blue rectangle and corner handles.
+   - **Charmap** — assigned characters and empty slots of the fixed 2048-slot open-addressed hash table.
+   - **Help** — short controls reference.
 4. **Visual & Property Editing:**
-   - Drag a corner handle to resize the glyph rectangle (`x0/y0/x1/y1`).
+   - Drag a corner handle to resize the glyph rectangle (`Start X/Y`, `End X/Y`). **Glyph Width / Height** are recalculated from the new rectangle size.
    - Drag the center of the rectangle to move it.
-   - Manually edit metrics on the right panel and click **"Apply Changes"**:
-     - **X Bearing / Y Bearing** — baseline offset (signed -128..127). Negative X shifts the glyph left, positive X shifts it right; positive Y moves it lower, negative Y moves it higher.
-     - **Glyph Width / Glyph Height** — physical on-screen size (rescales/stretches the glyph along the X/Y axis).
-     - **Advance Width** — horizontal step to the next character.
-5. **Character Management:** Select an action from the menu, fill in the relevant fields and click **"Apply"**:
-   - **add** — map a new character or code point (a single symbol or `U+XXXX`) to the selected glyph, in addition to its existing characters. Duplicate codes are rejected.
-   - **remove** — delete the character chosen in **Old Char** from the selected glyph. A glyph keeps at least one character; removing the last one is rejected.
-   - **replace** — reassign the character chosen in **Old Char** to the code point entered in **New Char**.
-   - **new_glyph** — append a new glyph at the end of the glyph table as a copy of the selected one, so it is visible and editable right away. **New Char** is optional and maps a character to the new glyph. The file grows: all sizes, offsets and the header checksum are updated automatically.
-   - **delete_glyph** — remove the selected glyph: its characters are unmapped and every later glyph moves down by one index. The file shrinks. Asks for confirmation first; cannot be undone once saved.
-6. **Saving:**
-   - **"Save As..."** — save to a new file.
+   - Edit fields on the right panel and click **"Apply Changes"**:
+     - **X Offset / Y Offset** — character offset (signed −128…127).
+     - **Glyph Width / Glyph Height** — physical on-screen size (also scales the atlas sample). UI shows stored value − 1.
+     - **Advance** — horizontal step to the next character (lo byte of the glyph’s s16 advance). For U+0020 the game uses **Space Width** from Font Metrics instead.
+     - **Kerning** — s16; always −1 in shipped fonts.
+     - **Ascent** — s16 at the end of the glyph record (often tracks glyph height; no confirmed on-screen effect alone).
+5. **Font Metrics** (right panel, font-wide):
+   - **Line Height**, **Space Width**, **Fallback** code point (e.g. `U+25A1`).
+   - Atlas size and max hash probes are shown read-only.
+6. **Character Management:** select an action, fill the fields, click **"Apply"**:
+   - **add** — map an extra character / `U+XXXX` to the selected glyph. Duplicate codes are rejected.
+   - **remove** — unmap the character chosen in **Old Char** (a glyph must keep at least one).
+   - **replace** — reassign **Old Char** to **New Char**.
+   - **new_glyph** — append a copy of the selected glyph; optional **New Char**. The file grows; sizes, offsets and checksum update on save.
+   - **delete_glyph** — remove the glyph, shift later indices, shrink the file (confirmation required; irreversible after save).
+7. **Saving:**
+   - **"Save As..."** — write a new file.
    - **"Save (overwrite)"** — overwrite the open file.
 
-The editor safely modifies the glyph records and rebuilds the fixed 2048-slot hash table without interrupting probe chains or corrupting unrelated file regions. When glyphs are added or deleted, the whole container is re-laid-out (charmap, alignment padding, texture resource, metadata, section sizes) and the header checksum plus the charmap probe limit are brought up to date on save, so a saved file is always one the game accepts.
+The editor patches glyph records in place and rebuilds the 2048-slot charmap without breaking probe chains. Adding or deleting glyphs re-lays out the container (charmap, 32-byte padding, texture resource, metadata, section sizes). On save, the header checksum and charmap probe limit are refreshed so the game accepts the file.
 
 ## Important Note
 
-The coordinate decoding formula for each font is:
+Atlas coordinates are stored in a fixed 14-bit grid (`UV_RANGE = 16384`):
 
 ```
 pixel = raw / DIV + OFFSET
 DIV   = 16384 / actual_texture_size_in_pixels
+OFFSET = -0.5   (all shipped profiles)
 ```
 
-where 16384 = 2¹⁴ — coordinates are stored in a fixed 14-bit normalized grid.
+Glyph record layout (18 bytes, little-endian): `s8 x_offset`, `s8 y_offset`, `u8 width`, `u8 height`, `u16 u0,u1,v0,v1`, `s16 advance`, `s16 kerning`, `s16 ascent`.
 
-The texture rectangle coordinate formula (`x0/y0/x1/y1`) is derived empirically, while rendering properties (**X/Y Bearing**, **Glyph Width/Height**, and **Advance Width**) are separately **confirmed in-game via XEMU**. Verify your changes in-game when doing large-scale modifications.
+**X/Y Offset**, **Glyph Width/Height**, and **Advance** are **confirmed in-game via XEMU**. **Kerning** is always −1 in shipped data; **Ascent** has no confirmed isolated on-screen effect. Verify large-scale changes in-game.
 
 ---
 
