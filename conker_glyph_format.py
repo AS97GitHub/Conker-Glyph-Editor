@@ -76,29 +76,21 @@ RESOURCE_ALIGNMENT = 32
 TEXTURE_RESOURCE_SIZE = 0x58
 DESCRIPTOR_HEADER = bytes.fromhex("010502000000")
 
-# The font object also stores one Unicode code point here: U+25A1 (the white
-# square) in all four shipped fonts - it is not the highest code (the Japanese fonts
-# map kanji above it).  Its purpose is not known; it may be the character shown for
-# unknown symbols, so the editor warns before the glyph for it is removed.
-HEADER_CODE_FIELD = 0x4D8
-# Two more font-wide values sit in the font object (uint32 each):
-#   0x4FC - the width of the space character, in the same on-screen units as a glyph's
-#           advance.  CONFIRMED IN-GAME: +20 widens the space, -5 narrows it, while the
-#           advance (byte14) of the U+0020 glyph itself has NO effect - the game takes
-#           the width of the space only from this field.  In all four shipped fonts the
-#           two are equal (9, 9, 9, 8).
-#   0x4F8 - 37 / 47 / 35 / 45 in the shipped fonts, with no simple relation to the glyph
-#           metrics.  Changing it showed NO effect in game so far (it may be a line
-#           spacing, which a single line of text cannot show); purpose still unknown.
+# Font-wide metrics, absolute file offsets:
+#   0x4F8 s32 line_height, 0x4FC s32 space_width, 0x500 u16 atlas W/H
+#   0x4D8 u32 fallback code point (U+25A1 in shipped fonts)
+#   0x4E4 u32 max hash probes
+LINE_HEIGHT_FIELD = 0x4F8
 SPACE_WIDTH_FIELD = 0x4FC
+HEADER_CODE_FIELD = 0x4D8
 SPACE_CODE = 0x20
 
-# Glyph rectangle coordinates (x0/x1/y0/y1_raw) are uint16 values in a
+# Glyph rectangle coordinates (start_x/end_x/start_y/end_y_raw) are uint16 values in a
 # 0..16384 space: raw = (pixel - offset) * 16384 / texture_size (see
 # UV_RANGE).  A real rectangle therefore never exceeds ~16384 (largest
 # value seen in the four shipped fonts: 16376).
 # "Special" glyphs (e.g. space) store a mirrored, negative-looking pair
-# instead: x1 = 65536 - x0 and y1 = 65536 - y0 as uint16, e.g. (32, 65504,
+# instead: end_x = 65536 - start_x and end_y = 65536 - start_y as uint16, e.g. (32, 65504,
 # 34, 65502).  Every value found in them is >= 65496.
 # A glyph is treated as "special" (no drawable rectangle) when any of its four
 # coordinates is above this threshold.  The value is an empirically chosen cut
@@ -197,8 +189,13 @@ def caff_checksum(data):
     return checksum
 
 
-# field1 field2 x0 x1 y0 y1 byte14 byte15 reserved(0xFFFF) unknown_field
-_GLYPH_REC_FORMAT = "<HHHHHHBBHH"
+class NoFreeSlotError(Exception):
+    """Charmap probe chain full, or no free glyph slot without allow_growth."""
+
+
+#   s8 x_offset, s8 y_offset, u8 width, u8 height,
+#   u16 u0,u1,v0,v1, s16 advance16, s16 kerning (-1), s16 ascent
+_GLYPH_REC_FORMAT = "<bbBB4H3h"
 
 
 class Glyph:
@@ -226,35 +223,34 @@ class Glyph:
                       |                  | system unrelated to on-screen glyph
                       |                  | drawing. Not fully ruled out.
     --------------------------------------------------------------------------------
-    x0_raw            | Start X          | Texture-atlas rectangle, left edge.
-    y0_raw            | Start Y          | Texture-atlas rectangle, top edge.
-    x1_raw            | End X            | Texture-atlas rectangle, right edge.
-    y1_raw            | End Y            | Texture-atlas rectangle, bottom edge.
+    start_x_raw       | Start X          | Texture-atlas rectangle, left edge.
+    start_y_raw       | Start Y          | Texture-atlas rectangle, top edge.
+    end_x_raw         | End X            | Texture-atlas rectangle, right edge.
+    end_y_raw         | End Y            | Texture-atlas rectangle, bottom edge.
     --------------------------------------------------------------------------------
-    field1 (hi byte)  | Y Bearing        | Vertical offset of the glyph relative to
+   xy_offset (hi byte)| Y Bearing        | Vertical offset of the glyph relative to
                       |                  | the baseline. Positive = glyph sits
                       |                  | lower (below baseline); negative = glyph
                       |                  | sits higher (above baseline). Signed int8.
-    field1 (lo byte)  | X Bearing        | Horizontal offset of the glyph relative
+   xy_offset (lo byte)| X Bearing        | Horizontal offset of the glyph relative
                       |                  | to the baseline. Negative = shifted left;
                       |                  | positive = shifted right. Signed int8.
     --------------------------------------------------------------------------------
-    field2 (hi byte)  | Glyph Height     | Physical glyph height. Also rescales
+    glyph_wh (hi byte)| Glyph Height     | Physical glyph height. Also rescales
                       |                  | (stretches/squashes) the glyph on the Y
                       |                  | axis when changed. Unsigned.
-    field2 (lo byte)  | Glyph Width      | Physical glyph width. Also rescales
+    glyph_wh (lo byte)| Glyph Width      | Physical glyph width. Also rescales
                       |                  | (stretches/squashes) the glyph on the X
                       |                  | axis when changed. Unsigned.
     --------------------------------------------------------------------------------
-    byte14            | Advance Width    | Horizontal step after this character -
+    advance_lo        | Advance          | Horizontal step after this character -
                       |                  | determines where the next character
-                      |                  | starts. This is what `unknown_field` (above)
+    advance_hi        |                  | starts. This is what `unknown_field` (above)
                       |                  | was originally assumed to do. Unsigned.
     --------------------------------------------------------------------------------
-    byte15            | -                | Always observed as 0x00; purpose unknown.
 
-    Record layout (18 bytes): field1, field2, x0, x1, y0, y1 (uint16 each),
-    byte14, byte15 (uint8 each), 0xFFFF (reserved - constant in every shipped
+    Record layout (18 bytes): xy_offset, glyph_wh, start_x, end_x, start_y, end_y (uint16 each),
+    advance_lo, advance_hi (uint8 each), 0xFFFF (reserved - constant in every shipped
     glyph), unknown_field (uint16).  unknown_field is the LAST two bytes of its
     own record.  Earlier versions of this tool read it from the two bytes in
     front of the record, i.e. every glyph showed its predecessor's value and the
@@ -265,33 +261,37 @@ class Glyph:
     thirds of ConkerFont's glyphs; 14 for the 14px-high U+25A1 square that used
     to be the "sentinel").
 
-    x0_raw..y1_raw use the FONT_PROFILES pixel-conversion formula (raw / DIV +
-    OFFSET). field1/field2 are stored as one uint16 each in the file but behave
+    start_x_raw..end_y_raw use the FONT_PROFILES pixel-conversion formula (raw / DIV +
+    OFFSET). xy_offset/glyph_wh are stored as one uint16 each in the file but behave
     as two INDEPENDENT single bytes - not as one combined 16-bit number.
     """
 
     __slots__ = (
-        "index", "unknown_field", "field1", "field2",
-        "x0_raw", "x1_raw", "y0_raw", "y1_raw",
-        "byte14", "byte15", "is_special", "char",
+        "index", "unknown_field", "xy_offset", "glyph_wh",
+        "start_x_raw", "end_x_raw", "start_y_raw", "end_y_raw",
+        "advance_lo", "advance_hi", "kerning", "ascent", "advance16",
+        "is_special", "char",
     )
 
     def __init__(self, index):
         self.index = index
         self.unknown_field = 0
-        self.field1 = 0
-        self.field2 = 0
-        self.x0_raw = 0
-        self.x1_raw = 0
-        self.y0_raw = 0
-        self.y1_raw = 0
-        self.byte14 = 0
-        self.byte15 = 0
+        self.xy_offset = 0
+        self.glyph_wh = 0
+        self.start_x_raw = 0
+        self.end_x_raw = 0
+        self.start_y_raw = 0
+        self.end_y_raw = 0
+        self.advance_lo = 0
+        self.advance_hi = 0
+        self.kerning = -1
+        self.ascent = 0
+        self.advance16 = 0
         self.is_special = False
         self.char = ""  # Populated externally from charmap, can be empty
 
     def to_pixels(self, x_div, y_div, x_off, y_off):
-        """Returns (x0, y0, x1, y1) in texture pixels, or None if is_special.
+        """Returns (start_x, start_y, end_x, end_y) in texture pixels, or None if is_special.
 
         Rounded to the nearest whole pixel: raw values in the file are always
         integers, and x_off/y_off are non-integer per profile (e.g. -0.5), so
@@ -305,13 +305,13 @@ class Glyph:
         """
         if self.is_special:
             return None
-        x0 = round(self.x0_raw / x_div + x_off)
-        x1 = round(self.x1_raw / x_div + x_off)
-        y0 = round(self.y0_raw / y_div + y_off)
-        y1 = round(self.y1_raw / y_div + y_off)
-        return (x0, y0, x1, y1)
+        start_x = round(self.start_x_raw / x_div + x_off)
+        end_x = round(self.end_x_raw / x_div + x_off)
+        start_y = round(self.start_y_raw / y_div + y_off)
+        end_y = round(self.end_y_raw / y_div + y_off)
+        return (start_x, start_y, end_x, end_y)
 
-    def set_from_pixels(self, x0, y0, x1, y1, x_div, y_div, x_off, y_off):
+    def set_from_pixels(self, start_x, start_y, end_x, end_y, x_div, y_div, x_off, y_off):
         """Inverse conversion: from pixel coordinates back to raw values.
 
         Raises ValueError, leaving the glyph untouched, if a coordinate is not a
@@ -320,8 +320,8 @@ class Glyph:
         reserves for "special" glyphs, and uint16 cannot hold negatives).
         """
         raws = []
-        for pixel, div, off in ((x0, x_div, x_off), (x1, x_div, x_off),
-                                (y0, y_div, y_off), (y1, y_div, y_off)):
+        for pixel, div, off in ((start_x, x_div, x_off), (end_x, x_div, x_off),
+                                (start_y, y_div, y_off), (end_y, y_div, y_off)):
             if not math.isfinite(pixel):
                 raise ValueError("Coordinates must be finite numbers")
             raw = int((pixel - off) * div)
@@ -330,7 +330,7 @@ class Glyph:
                     f"Coordinate {pixel:g} is outside the texture range of this profile"
                 )
             raws.append(raw)
-        self.x0_raw, self.x1_raw, self.y0_raw, self.y1_raw = raws
+        self.start_x_raw, self.end_x_raw, self.start_y_raw, self.end_y_raw = raws
         self.is_special = False
 
     def clone(self):
@@ -393,11 +393,20 @@ class ConkerFont:
         for i in range(self.glyph_count):
             off = GLYPH_TABLE_OFFSET + i * GLYPH_REC_SIZE
             g = Glyph(i)
-            (g.field1, g.field2, g.x0_raw, g.x1_raw, g.y0_raw, g.y1_raw,
-             g.byte14, g.byte15, _reserved, g.unknown_field) = struct.unpack_from(
+            (xoff, yoff, w, h, g.start_x_raw, g.end_x_raw, g.start_y_raw, g.end_y_raw,
+             advance16, kerning, ascent) = struct.unpack_from(
                 _GLYPH_REC_FORMAT, self.data, off)
+            # Editor-compatible aliases (xy_offset/glyph_wh, advance_lo/advance_hi, unknown_field)
+            g.xy_offset = ((yoff & 0xFF) << 8) | (xoff & 0xFF)
+            g.glyph_wh = ((h & 0xFF) << 8) | (w & 0xFF)
+            g.advance_lo = advance16 & 0xFF
+            g.advance_hi = (advance16 >> 8) & 0xFF
+            g.unknown_field = ascent & 0xFFFF
+            g.kerning = kerning
+            g.ascent = ascent
+            g.advance16 = advance16
             g.is_special = max(
-                g.x0_raw, g.x1_raw, g.y0_raw, g.y1_raw
+                g.start_x_raw, g.end_x_raw, g.start_y_raw, g.end_y_raw
             ) > SPECIAL_GLYPH_RAW_THRESHOLD
             glyphs.append(g)
         return glyphs
@@ -540,7 +549,7 @@ class ConkerFont:
           right when the glyphs keep their size and place and the picture just has
           more room (raises ValueError if some rectangle would fall outside a smaller
           texture).
-        Glyph Width/Height, bearings and advance are on-screen units and are never
+        Glyph Width/Height, bearings and advance16 are on-screen units and are never
         touched, so text keeps its size either way.
 
         Width must be a multiple of TEXTURE_WIDTH_ALIGNMENT, both sides at most
@@ -581,20 +590,20 @@ class ConkerFont:
         for g in self.glyphs:
             if g.is_special:
                 continue
-            x0, x1 = (round(v * ow / nw) for v in (g.x0_raw, g.x1_raw))
-            y0, y1 = (round(v * oh / nh) for v in (g.y0_raw, g.y1_raw))
+            start_x, end_x = (round(v * ow / nw) for v in (g.start_x_raw, g.end_x_raw))
+            start_y, end_y = (round(v * oh / nh) for v in (g.start_y_raw, g.end_y_raw))
             # pixel = raw * size / UV_RANGE + offset; the editor allows up to the texture size
-            if (max(x0, x1) > UV_RANGE * (1 + 0.5 / nw) + 1
-                    or max(y0, y1) > UV_RANGE * (1 + 0.5 / nh) + 1):
+            if (max(start_x, end_x) > UV_RANGE * (1 + 0.5 / nw) + 1
+                    or max(start_y, end_y) > UV_RANGE * (1 + 0.5 / nh) + 1):
                 outside += 1
-            edits.append((g.index, x0, x1, y0, y1))
+            edits.append((g.index, start_x, end_x, start_y, end_y))
         if outside:
             raise ValueError(
                 f"{outside} glyph rectangle(s) would lie outside the new {nw}x{nh} texture - "
                 "the texture is smaller than the area they cover"
             )
-        for index, x0, x1, y0, y1 in edits:
-            struct.pack_into("<HHHH", buf, GLYPH_TABLE_OFFSET + index * GLYPH_REC_SIZE + 4, x0, x1, y0, y1)
+        for index, start_x, end_x, start_y, end_y in edits:
+            struct.pack_into("<HHHH", buf, GLYPH_TABLE_OFFSET + index * GLYPH_REC_SIZE + 4, start_x, end_x, start_y, end_y)
 
     @property
     def checksum_ok(self):
@@ -602,26 +611,49 @@ class ConkerFont:
         return self._u32(CAFF_CHECKSUM_FIELD) == caff_checksum(self.data)
 
     @property
+    def line_height(self):
+        """Font-wide line height (inter-line spacing), s32 at LINE_HEIGHT_FIELD."""
+        return struct.unpack_from("<i", self.data, LINE_HEIGHT_FIELD)[0]
+
+    def set_line_height(self, value):
+        if not isinstance(value, int):
+            raise ValueError("Line Height must be an integer")
+        struct.pack_into("<i", self.data, LINE_HEIGHT_FIELD, value)
+
+    @property
     def space_width(self):
-        """Width of the space character (the font-wide value, see SPACE_WIDTH_FIELD)."""
-        return self._u32(SPACE_WIDTH_FIELD)
+        """Width of the space character (font-wide; space glyph advance16 is ignored)."""
+        return struct.unpack_from("<i", self.data, SPACE_WIDTH_FIELD)[0]
 
     def set_space_width(self, width):
-        """Set the width of the space character (an integer from 0 to 255, like an
-        advance).  Only the font-wide field is written; the space glyph's own advance is
-        ignored by the game (see SPACE_WIDTH_FIELD)."""
-        if not (isinstance(width, int) and 0 <= width <= 255):
+        if not isinstance(width, int) or not (0 <= width <= 255):
             raise ValueError("Space Width must be an integer between 0 and 255")
-        struct.pack_into("<I", self.data, SPACE_WIDTH_FIELD, width)
+        struct.pack_into("<i", self.data, SPACE_WIDTH_FIELD, width)
 
     def is_space_glyph(self, glyph_index):
-        """True for the glyph U+0020 maps to - the one whose own advance the game ignores."""
+        """True for the glyph U+0020 maps to - the one whose own advance16 the game ignores."""
         return self.charmap.get(SPACE_CODE) == glyph_index
 
     @property
     def header_code(self):
-        """The code point stored in the font header (see HEADER_CODE_FIELD)."""
+        """Fallback Unicode code point (HEADER_CODE_FIELD); U+25A1 in shipped fonts."""
         return self._u32(HEADER_CODE_FIELD)
+
+    def set_header_code(self, code):
+        if not (isinstance(code, int) and 0 <= code < SENTINEL):
+            raise ValueError("Fallback must be a BMP code point other than U+FFFF")
+        struct.pack_into("<I", self.data, HEADER_CODE_FIELD, code)
+
+    @property
+    def fallback(self):
+        return self.header_code
+
+    def set_fallback(self, code):
+        self.set_header_code(code)
+
+    @property
+    def max_probes(self):
+        return self._u32(CHARMAP_MAX_PROBES_FIELD)
 
     def codes_for_glyph(self, glyph_index):
         """Sorted list of every Unicode code point mapped to ``glyph_index``."""
@@ -666,8 +698,7 @@ class ConkerFont:
 
     @staticmethod
     def _charmap_step(code):
-        """Probe step used by the game's open-addressing charmap."""
-        return (code >> 5) + 2
+        return ((code >> 5) + 1) % 0x7FF + 1
 
     @classmethod
     def _probe_chain_length(cls, code):
@@ -772,7 +803,7 @@ class ConkerFont:
                     occupied[slot] = True
                     break
             else:
-                raise ValueError(
+                raise NoFreeSlotError(
                     self._no_slot_message(code, CHARMAP_SLOT_COUNT - len(entries))
                 )
 
@@ -903,7 +934,7 @@ class ConkerFont:
                 self._apply_charmap_to_glyphs()
                 return
 
-        raise ValueError(self._no_slot_message(code))
+        raise NoFreeSlotError(self._no_slot_message(code))
 
     # ---------- Adding / deleting glyphs ----------
 
@@ -1013,7 +1044,7 @@ class ConkerFont:
         self.data = bytearray(snapshot)
         self._reparse()
 
-    def add_glyph(self, template_index=None, code=None):
+    def add_glyph(self, template_index=None, code=None, allow_growth=True):
         """Append a new glyph at the end of the glyph array and return its index.
 
         The new glyph is a copy of glyph ``template_index`` (rectangle and
@@ -1033,13 +1064,17 @@ class ConkerFont:
                 raise ValueError(f"U+{code:04X} is already assigned to glyph #{self.charmap[code]}")
         has_gap = self.free_glyph_slots() > 0
         if not has_gap:
+            if not allow_growth:
+                raise NoFreeSlotError(
+                    "no free glyph slot (delete a glyph first, or allow the file to grow)"
+                )
             self._plan_layout()                    # refuse unknown layouts up front
 
         new_index = self.glyph_count
         glyph = Glyph(new_index) if template_index is None else self.glyphs[template_index].clone()
         glyph.index = new_index
         glyph.char = ""                            # no character mapped yet
-        blank = bytes(14) + b"\xff\xff" + bytes(2)  # reserved field is always FFFF
+        blank = struct.pack(_GLYPH_REC_FORMAT, 0, 0, 0, 0, 0, 0, 0, 0, 0, -1, 0)
         snapshot = bytes(self.data)
         try:
             end = self._array_end()
@@ -1092,13 +1127,27 @@ class ConkerFont:
         if not (0 <= i < len(self.glyphs)):
             raise ValueError(f"glyph index must be between 0 and {len(self.glyphs) - 1}")
         off = GLYPH_TABLE_OFFSET + i * GLYPH_REC_SIZE
+        xoff = glyph.xy_offset & 0xFF
+        if xoff >= 128:
+            xoff -= 256
+        yoff = (glyph.xy_offset >> 8) & 0xFF
+        if yoff >= 128:
+            yoff -= 256
+        w = glyph.glyph_wh & 0xFF
+        h = (glyph.glyph_wh >> 8) & 0xFF
+        advance16 = glyph.advance_lo | (glyph.advance_hi << 8)
+        if advance16 >= 0x8000:
+            advance16 -= 0x10000
+        kerning = getattr(glyph, "kerning", -1)
+        ascent = glyph.unknown_field
+        if ascent >= 0x8000:
+            ascent -= 0x10000
         struct.pack_into(
-            "<HHHHHHBB", self.data, off,
-            glyph.field1, glyph.field2,
-            glyph.x0_raw, glyph.x1_raw, glyph.y0_raw, glyph.y1_raw,
-            glyph.byte14, glyph.byte15,
+            _GLYPH_REC_FORMAT, self.data, off,
+            xoff, yoff, w, h,
+            glyph.start_x_raw, glyph.end_x_raw, glyph.start_y_raw, glyph.end_y_raw,
+            advance16, kerning, ascent,
         )
-        struct.pack_into("<H", self.data, off + 16, glyph.unknown_field)
         self.glyphs[i] = glyph
 
     def save(self, out_path=None):
@@ -1141,5 +1190,9 @@ class ConkerFont:
     def to_pixels(self, glyph):
         return glyph.to_pixels(*self._pixel_scale())
 
-    def set_pixels(self, glyph, x0, y0, x1, y1):
-        glyph.set_from_pixels(x0, y0, x1, y1, *self._pixel_scale())
+    def set_pixels(self, glyph, start_x, start_y, end_x, end_y):
+        glyph.set_from_pixels(start_x, start_y, end_x, end_y, *self._pixel_scale())
+        # Keep Glyph Width/Height in sync with the atlas rectangle (UI shows stored-1).
+        w_px = max(0, int(round(end_x)) - int(round(start_x)))
+        h_px = max(0, int(round(end_y)) - int(round(start_y)))
+        glyph.glyph_wh = (min(255, h_px + 1) << 8) | min(255, w_px + 1)

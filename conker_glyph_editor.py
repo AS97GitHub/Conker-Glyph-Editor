@@ -68,9 +68,9 @@ UI_FONT_SIZE = 9
 MONO_FONT_SIZE = 10
 
 TAB_WIDTHS = {
-    "Segoe UI": 16,
-    "Ubuntu": 14,
-    "sans-serif": 13,
+    "Segoe UI": 10,
+    "Ubuntu": 8,
+    "sans-serif": 8,
 }
 
 def _pick_family(root, candidates):
@@ -552,7 +552,7 @@ class GlyphEditorApp:
         self.selected_index = None
         self.selected_code = None   # Current charmap code for the selected glyph
         self.current_file_path = None  # Track current file path
-        self.drag_mode = None          # None | "move" | "x0y0" | "x1y0" | "x0y1" | "x1y1"
+        self.drag_mode = None          # None | "move" | "start_xstart_y" | "end_xstart_y" | "start_xend_y" | "end_xend_y"
         self.drag_start = None
         self.drag_orig_rect = None
         self.unsaved_changes = False
@@ -687,7 +687,7 @@ class GlyphEditorApp:
 
         # --- Tabs ---
         style = ttk.Style(self.root)
-        style.configure("TNotebook.Tab", width=tab_width, padding=(0, 4, 0, 4), anchor="center")
+        style.configure("TNotebook.Tab", focuscolor=style.lookup("TNotebook", "background"), width=tab_width, padding=(0, 4, 0, 4), anchor="center")
         # 'clam' maps its own padding for the selected tab ("6 4 6 2"), which overrides
         # the line above and makes tabs resize on click. Pin it for every state.
         style.map("TNotebook.Tab", padding=[("selected", (0, 7, 0, 4))], expand=[("selected", (0, 0, 0, 0))])
@@ -713,6 +713,10 @@ class GlyphEditorApp:
         # --- Tab 2: Charmap ---
         charmap_tab = ttk.Frame(self.left_notebook)
         self.left_notebook.add(charmap_tab, text="Charmap")
+
+        # --- Tab 3: Help (full height of the left pane) ---
+        help_tab = ttk.Frame(self.left_notebook)
+        self.left_notebook.add(help_tab, text="Help")
 
         charmap_list_frame = ttk.Frame(charmap_tab)
         charmap_list_frame.pack(fill=tk.BOTH, expand=True, pady=0)
@@ -777,15 +781,17 @@ class GlyphEditorApp:
         self.prop_labels = {}
         prop_fields = [
             ("index", "Index"),
-            ("x0", "Start X"),
-            ("y0", "Start Y"),
-            ("x1", "End X"),
-            ("y1", "End Y"),
-            ("field1_lo", "X Bearing (-←/+→)"),
-            ("field1_hi", "Y Bearing (-↑/+↓)"),
-            ("field2_lo", "Glyph Width (↔)"),
-            ("field2_hi", "Glyph Height (↕)"),
-            ("byte14", "Advance Width"),
+            ("start_x", "Start X"),
+            ("start_y", "Start Y"),
+            ("end_x", "End X"),
+            ("end_y", "End Y"),
+            ("glyph_width", "Glyph Width (↔)"),
+            ("glyph_height", "Glyph Height (↕)"),
+            ("x_offset", "X Offset (-←/+→)"),
+            ("y_offset", "Y Offset (-↑/+↓)"),
+            ("advance_lo", "Advance"),
+            ("kerning", "Kerning"),
+            ("ascent", "Ascent"),
         ]
         for key, label in prop_fields:
             row = ttk.Frame(props)
@@ -854,20 +860,49 @@ class GlyphEditorApp:
             fill=tk.X, padx=2, pady=2
         )
 
-        help_frame = ttk.LabelFrame(right, text="Help / Info")
-        help_frame.pack(fill=tk.BOTH, expand=True, padx=(0, 4), pady=4)
+        # Font-wide metrics (line height, space width, fallback)
+        metrics = ttk.LabelFrame(right, text="Font Metrics")
+        metrics.pack(fill=tk.X, padx=(0, 4), pady=4)
+        self.metric_vars = {}
+        for key, label, readonly in (
+            ("line_height", "Line Height", False),
+            ("space_width", "Space Width", False),
+            ("fallback", "Fallback (U+hex)", False),
+            ("atlas", "Atlas Size", True),
+            ("max_probes", "Max Probes", True),
+        ):
+            row = ttk.Frame(metrics)
+            row.pack(fill=tk.X, pady=(2, 1))
+            ttk.Label(row, text=label + ":", width=17, anchor="e").pack(side=tk.LEFT, padx=(0, 2))
+            var = tk.StringVar(value="")
+            if readonly:
+                ttk.Label(row, textvariable=var, anchor="w").pack(
+                    side=tk.LEFT, fill=tk.X, expand=True
+                )
+            else:
+                entry = ttk.Entry(row, textvariable=var, width=12)
+                entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 2))
+            self.metric_vars[key] = var
+        ttk.Button(metrics, text="Apply Font Metrics", command=self.apply_font_metrics, padding=2).pack(
+            fill=tk.X, padx=2, pady=2
+        )
 
-        # Create scrollable text widget for help
+        # Help lives in the left notebook tab so the right panel stays compact
+        help_frame = ttk.Frame(help_tab)
+        help_frame.pack(fill=tk.BOTH, expand=True, pady=0)
+
         help_scrollbar = ttk.Scrollbar(help_frame)
         help_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
-        help_text = tk.Text(help_frame, wrap=tk.WORD, width=30, height=10,
+        help_text = tk.Text(help_frame, wrap=tk.WORD, width=28, height=10,
                             yscrollcommand=help_scrollbar.set,
                             font=self.ui_font, state=tk.DISABLED,
                             relief=tk.FLAT, highlightthickness=0,
                             background=self.colors["field"],
                             foreground=self.colors["fg"],
-                            insertbackground=self.colors["fg"])
+                            insertbackground=self.colors["fg"],
+                            selectbackground=self.colors["select"],
+                            selectforeground=self.colors["fg"])
         help_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         help_scrollbar.config(command=help_text.yview)
 
@@ -885,11 +920,6 @@ class GlyphEditorApp:
             "**delete_glyph:** removes the selected glyph: its characters are unmapped and every later glyph moves down by one index. The file shrinks and everything behind the glyph table moves up. Asks for confirmation first; cannot be undone once saved.\n"
             "**Import texture:** replaces the texture inside the .bin with a PNG/BMP; it is written when you save. The picture may be larger (or smaller) than the current texture: width a multiple of 64, up to 4096. You are asked what happens to the glyph rectangles: **Yes** keeps them on the same pixels (the glyphs keep their size and place, the picture just has more room), **No** scales them with the texture (an enlarged version of the same atlas). Glyph Width/Height, bearings and advance are never changed, so text keeps its on-screen size. **Ctrl+V** imports the image from the clipboard.\n"
             "**Export texture:** saves the texture of the .bin as a PNG. **Ctrl+C** copies it to the clipboard. (The shortcuts do not apply while you type in a text field.)\n\n"
-            "**VERIFIED IN-GAME (via XEMU):**\n"
-            "**Glyph Width/Height:** physical glyph size. Changing these visibly stretches/quashes the glyph on screen along X/Y. Stored as **TWO** independent bytes, not one number.\n"
-            "**Advance Width:** horizontal step after this character - where the next one starts. For the space glyph (U+0020) the field is shown as **Space Width**: the game takes the width of the space from a font-wide value and ignores the glyph's own advance (verified in game); the editor writes both.\n"
-            "**X/Y Bearing:** offset of the glyph from the baseline. Negative X = left, positive X = right. Positive Y = lower, negative Y = higher. Shown/entered as **SIGNED** bytes (-128..127).\n\n"
-            "Pixel-conversion formula (both X and Y) found empirically."
         )
         help_text.tag_configure("bold", font=self.bold_font)
         help_text.config(state=tk.NORMAL)
@@ -965,6 +995,7 @@ class GlyphEditorApp:
                 var.set("")
 
         self._refresh_glyph_list()
+        self._refresh_font_metrics()
         problem = self._load_embedded_texture()
         if keep_selection:
             self.select_glyph(self.selected_index)   # also redraws the canvas
@@ -1080,10 +1111,10 @@ class GlyphEditorApp:
         except EXPECTED_LOAD_ERRORS as err:
             messagebox.showerror("Import Error", str(err))
             return False
-        if resized:                        # keep the canvas about as large as it was
+        if resized:                            # keep the canvas about as large as it was
             self.zoom = max(MIN_ZOOM, round(self.zoom * old_w / new_w))
             self.zoom_var.set(self.zoom)
-        self._load_embedded_texture()      # also caps the zoom for big textures
+        self._load_embedded_texture()          # also caps the zoom for big textures
         if self.selected_index is not None:    # pixel coordinates may be different now
             self.select_glyph(self.selected_index, preferred_code=self.selected_code)
         else:
@@ -1242,14 +1273,15 @@ class GlyphEditorApp:
             # All characters mapped to this glyph, sorted by code point
             glyph_codes = sorted(codes_by_glyph.get(g.index, ()))
             if glyph_codes:
-                char_disp = "".join(chr(code) for code in glyph_codes)
-                # Use the lowest code as the preferred one
+                chars = "".join(chr(code) for code in glyph_codes)
+                codes = ", ".join(f"U+{code:04X}" for code in glyph_codes)
+                char_disp = f"{chars}  ({codes})"
                 preferred_code = glyph_codes[0]
             else:
-                char_disp = "\u00b7"
+                char_disp = "·"
                 preferred_code = None
             special = " [spec]" if g.is_special else ""
-            rows.append(f"{g.index:3d}  char={char_disp}  adv={g.byte14:3d}{special}")
+            rows.append(f"{g.index:3d}  char={char_disp}{special}")
             row_data.append((g.index, preferred_code))
 
         if rows:
@@ -1377,45 +1409,40 @@ class GlyphEditorApp:
             self.selected_code = None
 
         self.prop_vars["index"].set(str(g.index))
-        # field1 is stored as one uint16 in the file, but behaves as two independent
+        # xy_offset is stored as one uint16 in the file, but behaves as two independent
         # bytes. CONFIRMED IN-GAME: lo byte = X Bearing (horizontal offset from the
         # baseline - negative shifts left, positive shifts right), hi byte = Y Bearing
         # (vertical offset from the baseline - positive moves the glyph down, negative
         # moves it up). Displayed/edited here as SIGNED int8 (-128..127),
         # since the raw unsigned readings (e.g. 254/255) only made sense once
         # reinterpreted as small negative numbers (-2/-1).
-        f1_hi, f1_lo = g.field1 >> 8, g.field1 & 0xFF
-        self.prop_vars["field1_lo"].set(str(self._byte_to_signed(f1_lo)))
-        self.prop_vars["field1_hi"].set(str(self._byte_to_signed(f1_hi)))
-        # field2 is stored as one uint16 in the file, but behaves as two INDEPENDENT
+        xy_hi, xy_lo = g.xy_offset >> 8, g.xy_offset & 0xFF
+        self.prop_vars["x_offset"].set(str(self._byte_to_signed(xy_lo)))
+        self.prop_vars["y_offset"].set(str(self._byte_to_signed(xy_hi)))
+        # glyph_wh is stored as one uint16 in the file, but behaves as two INDEPENDENT
         # single-byte values. CONFIRMED IN-GAME: lo byte = Glyph Width, hi byte =
         # Glyph Height - changing either one visibly stretches/squashes the glyph on
         # screen along that axis (not just the atlas rectangle size).
         # Displayed with -1 offset for user convenience.
-        f2_hi, f2_lo = g.field2 >> 8, g.field2 & 0xFF
-        self.prop_vars["field2_lo"].set(str(f2_lo - 1))
-        self.prop_vars["field2_hi"].set(str(f2_hi - 1))
-        # byte14 CONFIRMED IN-GAME to be the real Advance Width - it determines
-        # where the NEXT character starts, unlike the 'Unknown' hi/lo field above
-        # which showed no visible effect when changed in isolation.
-        if self.font.is_space_glyph(index):
-            # The space has no rectangle and the game ignores its own advance (verified in
-            # game): the width of the space comes from a font-wide value, shown here.
-            self.prop_labels["byte14"].config(text="Space Width:")
-            self.prop_vars["byte14"].set(str(self.font.space_width))
-        else:
-            self.prop_labels["byte14"].config(text="Advance Width:")
-            self.prop_vars["byte14"].set(str(g.byte14))
+        wh_hi, wh_lo = g.glyph_wh >> 8, g.glyph_wh & 0xFF
+        self.prop_vars["glyph_width"].set(str(wh_lo - 1))
+        self.prop_vars["glyph_height"].set(str(wh_hi - 1))
+        # advance_lo = lo byte of the glyph's s16 advance. Space width is font-wide
+        # (Font Metrics panel); the game ignores U+0020's own advance.
+        self.prop_labels["advance_lo"].config(text="Advance:")
+        self.prop_vars["advance_lo"].set(str(g.advance_lo))
+        self.prop_vars["kerning"].set(str(getattr(g, "kerning", -1)))
+        self.prop_vars["ascent"].set(str(g.unknown_field))
 
         pixels = self.font.to_pixels(g)
         if pixels:
-            x0, y0, x1, y1 = pixels
-            self.prop_vars["x0"].set(f"{x0:.0f}")
-            self.prop_vars["y0"].set(f"{y0:.0f}")
-            self.prop_vars["x1"].set(f"{x1:.0f}")
-            self.prop_vars["y1"].set(f"{y1:.0f}")
+            start_x, start_y, end_x, end_y = pixels
+            self.prop_vars["start_x"].set(f"{start_x:.0f}")
+            self.prop_vars["start_y"].set(f"{start_y:.0f}")
+            self.prop_vars["end_x"].set(f"{end_x:.0f}")
+            self.prop_vars["end_y"].set(f"{end_y:.0f}")
         else:
-            for k in ("x0", "y0", "x1", "y1"):
+            for k in ("start_x", "start_y", "end_x", "end_y"):
                 self.prop_vars[k].set("(special glyph)")
 
         self._redraw_canvas()
@@ -1446,38 +1473,100 @@ class GlyphEditorApp:
             self.charmap_listbox.selection_set(target_row)
             self.charmap_listbox.see(target_row)
 
+    def _refresh_font_metrics(self):
+        if self.font is None:
+            for var in self.metric_vars.values():
+                var.set("")
+            return
+        self.metric_vars["line_height"].set(str(self.font.line_height))
+        self.metric_vars["space_width"].set(str(self.font.space_width))
+        self.metric_vars["fallback"].set(f"U+{self.font.fallback:04X}")
+        w, h = self.font.texture_size
+        self.metric_vars["atlas"].set(f"{w} x {h}")
+        self.metric_vars["max_probes"].set(str(self.font.max_probes))
+
+    def apply_font_metrics(self):
+        if self.font is None:
+            return
+        try:
+            line_h = int(self.metric_vars["line_height"].get().strip())
+            space_w = int(self.metric_vars["space_width"].get().strip())
+            fb_raw = self.metric_vars["fallback"].get().strip().upper()
+            if fb_raw.startswith("U+"):
+                fb_raw = fb_raw[2:]
+            fallback = int(fb_raw, 16) if all(c in "0123456789ABCDEF" for c in fb_raw) else int(fb_raw)
+        except ValueError:
+            messagebox.showerror(
+                "Invalid Input",
+                "Line Height and Space Width must be integers.\n"
+                "Fallback must be a code point like U+25A1 or 9633.",
+            )
+            return
+        try:
+            changed = False
+            if line_h != self.font.line_height:
+                self.font.set_line_height(line_h)
+                changed = True
+            if space_w != self.font.space_width:
+                self.font.set_space_width(space_w)
+                changed = True
+            if fallback != self.font.fallback:
+                self.font.set_fallback(fallback)
+                changed = True
+        except ValueError as e:
+            messagebox.showerror("Invalid Input", str(e))
+            return
+        if not changed:
+            self.status_var.set("Font metrics: no changes")
+            return
+        self._refresh_font_metrics()
+        self._mark_modified(
+            f"Font metrics: line_height={line_h}, space_width={space_w}, "
+            f"fallback=U+{fallback:04X}"
+        )
+
     def apply_property_edits(self):
         if self.font is None or self.selected_index is None:
             return
         orig = self.font.glyphs[self.selected_index]
         g = orig.clone()
-        is_space = self.font.is_space_glyph(orig.index)
-        try:
-            # field1_lo and field1_hi are treated as two INDEPENDENT single bytes,
-            # entered/displayed as SIGNED int8 (-128..127) - see select_glyph for why.
-            f1_lo = self._signed_to_byte(int(self.prop_vars["field1_lo"].get()))
-            f1_hi = self._signed_to_byte(int(self.prop_vars["field1_hi"].get()))
-            g.field1 = (f1_hi << 8) | f1_lo
 
-            # field2_lo and field2_hi are likewise INDEPENDENT single bytes, each
+        try:
+            # x_offset and y_offset are treated as two INDEPENDENT single bytes,
+            # entered/displayed as SIGNED int8 (-128..127) - see select_glyph for why.
+            xy_lo = self._signed_to_byte(int(self.prop_vars["x_offset"].get()))
+            xy_hi = self._signed_to_byte(int(self.prop_vars["y_offset"].get()))
+            g.xy_offset = (xy_hi << 8) | xy_lo
+
+            # glyph_width and glyph_height are likewise INDEPENDENT single bytes, each
             # validated and packed separately. The user enters them with a -1
             # offset, so 1 is added back when storing.
-            f2_lo = int(self.prop_vars["field2_lo"].get()) + 1
-            f2_hi = int(self.prop_vars["field2_hi"].get()) + 1
-            if not (0 <= f2_lo <= 255):
+            wh_lo = int(self.prop_vars["glyph_width"].get()) + 1
+            wh_hi = int(self.prop_vars["glyph_height"].get()) + 1
+            if not (0 <= wh_lo <= 255):
                 raise ValueError("Glyph Width must be an integer between -1 and 254 (displayed with -1 offset)")
-            if not (0 <= f2_hi <= 255):
+            if not (0 <= wh_hi <= 255):
                 raise ValueError("Glyph Height must be an integer between -1 and 254 (displayed with -1 offset)")
-            g.field2 = (f2_hi << 8) | f2_lo
+            g.glyph_wh = (wh_hi << 8) | wh_lo
 
-            byte14_val = int(self.prop_vars["byte14"].get())
-            if not (0 <= byte14_val <= 255):
-                raise ValueError(f"{'Space' if is_space else 'Advance'} Width must be an integer "
-                                 "between 0 and 255 (it's a single byte in the file)")
-            g.byte14 = byte14_val
+            advance_lo_val = int(self.prop_vars["advance_lo"].get())
+            if not (0 <= advance_lo_val <= 255):
+                raise ValueError("Advance must be an integer between 0 and 255")
+
+            g.advance_lo = advance_lo_val
+
+            kerning_val = int(self.prop_vars["kerning"].get())
+            if not (-32768 <= kerning_val <= 32767):
+                raise ValueError("Kerning must be an integer between -32768 and 32767")
+            g.kerning = kerning_val
+
+            ascent_val = int(self.prop_vars["ascent"].get())
+            if not (0 <= ascent_val <= 65535):
+                raise ValueError("Ascent must be an integer between 0 and 65535")
+            g.unknown_field = ascent_val
 
             if not g.is_special:
-                rect = tuple(float(self.prop_vars[k].get()) for k in ("x0", "y0", "x1", "y1"))
+                rect = tuple(float(self.prop_vars[k].get()) for k in ("start_x", "start_y", "end_x", "end_y"))
                 # raw -> pixels -> raw is lossy: rewrite the rectangle only if it was edited
                 if rect != self.font.to_pixels(orig):
                     self.font.set_pixels(g, *rect)
@@ -1485,12 +1574,12 @@ class GlyphEditorApp:
             messagebox.showerror("Invalid Input", str(e))
             return
 
-        space_changed = is_space and g.byte14 != self.font.space_width
-        if g.same_data(orig) and not space_changed:
+
+        if g.same_data(orig):
             self.status_var.set(f"Glyph #{g.index}: no changes")
             return
-        if space_changed:                  # the font-wide value is what the game reads
-            self.font.set_space_width(g.byte14)
+
+
         self._commit_glyph_edit(g)
 
     def _update_old_char_combo(self):
@@ -1670,11 +1759,11 @@ class GlyphEditorApp:
             pixels = self.font.to_pixels(g)
             if pixels is None:
                 continue
-            x0, y0, x1, y1 = pixels
+            start_x, start_y, end_x, end_y = pixels
             color = "#00e0ff" if g.index == self.selected_index else "#ff3030"
             width = 2 if g.index == self.selected_index else 1
             self.canvas.create_rectangle(
-                x0 * z, y0 * z, x1 * z, y1 * z,
+                start_x * z, start_y * z, end_x * z, end_y * z,
                 outline=color, width=width, tags=(f"glyph_{g.index}",)
             )
 
@@ -1684,7 +1773,7 @@ class GlyphEditorApp:
             if pixels:
                 self._draw_handles(*pixels, z)
 
-    def _redraw_selected_glyph(self, x0, y0, x1, y1):
+    def _redraw_selected_glyph(self, start_x, start_y, end_x, end_y):
         """Optimized redraw for only the selected glyph during drag operations."""
         z = self.zoom
         self.canvas.delete(f"glyph_{self.selected_index}")
@@ -1692,18 +1781,18 @@ class GlyphEditorApp:
 
         # Draw selected glyph rectangle
         self.canvas.create_rectangle(
-            x0 * z, y0 * z, x1 * z, y1 * z,
+            start_x * z, start_y * z, end_x * z, end_y * z,
             outline="#00e0ff", width=2, tags=(f"glyph_{self.selected_index}",)
         )
 
         # Draw handles
-        self._draw_handles(x0, y0, x1, y1, z)
+        self._draw_handles(start_x, start_y, end_x, end_y, z)
 
-    def _draw_handles(self, x0, y0, x1, y1, z):
+    def _draw_handles(self, start_x, start_y, end_x, end_y, z):
         hs = HANDLE_SIZE
         pts = {
-            "x0y0": (x0 * z, y0 * z), "x1y0": (x1 * z, y0 * z),
-            "x0y1": (x0 * z, y1 * z), "x1y1": (x1 * z, y1 * z),
+            "start_xstart_y": (start_x * z, start_y * z), "end_xstart_y": (end_x * z, start_y * z),
+            "start_xend_y": (start_x * z, end_y * z), "end_xend_y": (end_x * z, end_y * z),
         }
         for tag, (px, py) in pts.items():
             self.canvas.create_rectangle(
@@ -1727,24 +1816,24 @@ class GlyphEditorApp:
             g = self.font.glyphs[self.selected_index]
             pixels = self.font.to_pixels(g)
             if pixels:
-                x0, y0, x1, y1 = pixels
+                start_x, start_y, end_x, end_y = pixels
                 tol = HANDLE_SIZE / self.zoom + 1
-                if abs(x - x0) < tol and abs(y - y0) < tol:
-                    self.drag_mode = "x0y0"
-                elif abs(x - x1) < tol and abs(y - y0) < tol:
-                    self.drag_mode = "x1y0"
-                elif abs(x - x0) < tol and abs(y - y1) < tol:
-                    self.drag_mode = "x0y1"
-                elif abs(x - x1) < tol and abs(y - y1) < tol:
-                    self.drag_mode = "x1y1"
-                elif x0 < x < x1 and y0 < y < y1:
+                if abs(x - start_x) < tol and abs(y - start_y) < tol:
+                    self.drag_mode = "start_xstart_y"
+                elif abs(x - end_x) < tol and abs(y - start_y) < tol:
+                    self.drag_mode = "end_xstart_y"
+                elif abs(x - start_x) < tol and abs(y - end_y) < tol:
+                    self.drag_mode = "start_xend_y"
+                elif abs(x - end_x) < tol and abs(y - end_y) < tol:
+                    self.drag_mode = "end_xend_y"
+                elif start_x < x < end_x and start_y < y < end_y:
                     self.drag_mode = "move"
                 else:
                     self.drag_mode = None
 
                 if self.drag_mode:
                     self.drag_start = (x, y)
-                    self.drag_orig_rect = (x0, y0, x1, y1)
+                    self.drag_orig_rect = (start_x, start_y, end_x, end_y)
                     return
 
         # Otherwise try to select the glyph under cursor (smallest area matching)
@@ -1754,9 +1843,9 @@ class GlyphEditorApp:
             pixels = self.font.to_pixels(g)
             if pixels is None:
                 continue
-            x0, y0, x1, y1 = pixels
-            if x0 <= x <= x1 and y0 <= y <= y1:
-                area = (x1 - x0) * (y1 - y0)
+            start_x, start_y, end_x, end_y = pixels
+            if start_x <= x <= end_x and start_y <= y <= end_y:
+                area = (end_x - start_x) * (end_y - start_y)
                 if best_area is None or area < best_area:
                     best = g.index
                     best_area = area
@@ -1769,72 +1858,75 @@ class GlyphEditorApp:
 
         Shared by on_canvas_drag (live preview) and on_canvas_release (final
         commit) so the move/resize/clamp math only lives in one place.
-        Returns (x0, y0, x1, y1) as ints, normalized so x0<=x1 and y0<=y1.
+        Returns (start_x, start_y, end_x, end_y) as ints, normalized so start_x<=end_x and start_y<=end_y.
         """
         x, y = self._canvas_to_texpx(event)
         dx = x - self.drag_start[0]
         dy = y - self.drag_start[1]
-        x0, y0, x1, y1 = self.drag_orig_rect
+        start_x, start_y, end_x, end_y = self.drag_orig_rect
 
         # Store original dimensions for move mode
-        orig_width = x1 - x0
-        orig_height = y1 - y0
+        orig_width = end_x - start_x
+        orig_height = end_y - start_y
 
         if self.drag_mode == "move":
-            x0, x1 = x0 + dx, x1 + dx
-            y0, y1 = y0 + dy, y1 + dy
-        elif self.drag_mode == "x0y0":
-            x0, y0 = x0 + dx, y0 + dy
-        elif self.drag_mode == "x1y0":
-            x1, y0 = x1 + dx, y0 + dy
-        elif self.drag_mode == "x0y1":
-            x0, y1 = x0 + dx, y1 + dy
-        elif self.drag_mode == "x1y1":
-            x1, y1 = x1 + dx, y1 + dy
+            start_x, end_x = start_x + dx, end_x + dx
+            start_y, end_y = start_y + dy, end_y + dy
+        elif self.drag_mode == "start_xstart_y":
+            start_x, start_y = start_x + dx, start_y + dy
+        elif self.drag_mode == "end_xstart_y":
+            end_x, start_y = end_x + dx, start_y + dy
+        elif self.drag_mode == "start_xend_y":
+            start_x, end_y = start_x + dx, end_y + dy
+        elif self.drag_mode == "end_xend_y":
+            end_x, end_y = end_x + dx, end_y + dy
 
         # Clamp to the texture. Left/top are always clamped at 0 (a negative value
         # cannot be stored as a raw uint16 coordinate); without a texture there is
         # no right/bottom limit and the range check in set_from_pixels() applies.
         tex_w, tex_h = self.tex_image.size if self.tex_image else (float("inf"), float("inf"))
-        x0 = max(0, min(x0, tex_w))
-        x1 = max(0, min(x1, tex_w))
-        y0 = max(0, min(y0, tex_h))
-        y1 = max(0, min(y1, tex_h))
+        start_x = max(0, min(start_x, tex_w))
+        end_x = max(0, min(end_x, tex_w))
+        start_y = max(0, min(start_y, tex_h))
+        end_y = max(0, min(end_y, tex_h))
 
         # In move mode, preserve original dimensions after clamping
         if self.drag_mode == "move":
-            # If x0 was clamped, adjust x1 to maintain width
-            if x0 != self.drag_orig_rect[0] + dx:
-                x1 = x0 + orig_width
-            # If x1 was clamped, adjust x0 to maintain width
-            elif x1 != self.drag_orig_rect[2] + dx:
-                x0 = x1 - orig_width
+            # If start_x was clamped, adjust end_x to maintain width
+            if start_x != self.drag_orig_rect[0] + dx:
+                end_x = start_x + orig_width
+            # If end_x was clamped, adjust start_x to maintain width
+            elif end_x != self.drag_orig_rect[2] + dx:
+                start_x = end_x - orig_width
             # Same for y coordinates
-            if y0 != self.drag_orig_rect[1] + dy:
-                y1 = y0 + orig_height
-            elif y1 != self.drag_orig_rect[3] + dy:
-                y0 = y1 - orig_height
+            if start_y != self.drag_orig_rect[1] + dy:
+                end_y = start_y + orig_height
+            elif end_y != self.drag_orig_rect[3] + dy:
+                start_y = end_y - orig_height
 
         # Truncate coordinates to integers to avoid decimal values
-        x0_rounded = int(min(x0, x1))
-        y0_rounded = int(min(y0, y1))
-        x1_rounded = int(max(x0, x1))
-        y1_rounded = int(max(y0, y1))
-        return x0_rounded, y0_rounded, x1_rounded, y1_rounded
+        start_x_rounded = int(min(start_x, end_x))
+        start_y_rounded = int(min(start_y, end_y))
+        end_x_rounded = int(max(start_x, end_x))
+        end_y_rounded = int(max(start_y, end_y))
+        return start_x_rounded, start_y_rounded, end_x_rounded, end_y_rounded
 
     def on_canvas_drag(self, event):
         if self.font is None or self.selected_index is None or self.drag_mode is None:
             return
-        x0_rounded, y0_rounded, x1_rounded, y1_rounded = self._compute_dragged_rect(event)
+        start_x_rounded, start_y_rounded, end_x_rounded, end_y_rounded = self._compute_dragged_rect(event)
 
         # Update UI fields without saving to data during drag
-        self.prop_vars["x0"].set(f"{x0_rounded}")
-        self.prop_vars["y0"].set(f"{y0_rounded}")
-        self.prop_vars["x1"].set(f"{x1_rounded}")
-        self.prop_vars["y1"].set(f"{y1_rounded}")
+        self.prop_vars["start_x"].set(f"{start_x_rounded}")
+        self.prop_vars["start_y"].set(f"{start_y_rounded}")
+        self.prop_vars["end_x"].set(f"{end_x_rounded}")
+        self.prop_vars["end_y"].set(f"{end_y_rounded}")
+        # Live Glyph Width/Height (display = pixel size; stored = size + 1)
+        self.prop_vars["glyph_width"].set(str(end_x_rounded - start_x_rounded))
+        self.prop_vars["glyph_height"].set(str(end_y_rounded - start_y_rounded))
 
         # Optimized redraw - only update selected glyph
-        self._redraw_selected_glyph(x0_rounded, y0_rounded, x1_rounded, y1_rounded)
+        self._redraw_selected_glyph(start_x_rounded, start_y_rounded, end_x_rounded, end_y_rounded)
 
     def on_canvas_release(self, event):
         if self.drag_mode:
