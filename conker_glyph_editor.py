@@ -1427,7 +1427,7 @@ class GlyphEditorApp:
         wh_hi, wh_lo = g.glyph_wh >> 8, g.glyph_wh & 0xFF
         self.prop_vars["glyph_width"].set(str(wh_lo - 1))
         self.prop_vars["glyph_height"].set(str(wh_hi - 1))
-        # advance_lo = lo byte of the glyph's s16 advance. Space width is font-wide
+        # advance_lo = lo byte of the glyph's advance (int16). Space width is font-wide
         # (Font Metrics panel); the game ignores U+0020's own advance.
         self.prop_labels["advance_lo"].config(text="Advance:")
         self.prop_vars["advance_lo"].set(str(g.advance_lo))

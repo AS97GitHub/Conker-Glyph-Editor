@@ -77,9 +77,9 @@ TEXTURE_RESOURCE_SIZE = 0x58
 DESCRIPTOR_HEADER = bytes.fromhex("010502000000")
 
 # Font-wide metrics, absolute file offsets:
-#   0x4F8 s32 line_height, 0x4FC s32 space_width, 0x500 u16 atlas W/H
-#   0x4D8 u32 fallback code point (U+25A1 in shipped fonts)
-#   0x4E4 u32 max hash probes
+#   0x4F8 (int32)line_height, 0x4FC (int32) space_width, 0x500 (uint16) atlas W/H
+#   0x4D8 (uint32) fallback code point (U+25A1 in shipped fonts)
+#   0x4E4 (uint32) max hash probes
 LINE_HEIGHT_FIELD = 0x4F8
 SPACE_WIDTH_FIELD = 0x4FC
 HEADER_CODE_FIELD = 0x4D8
@@ -193,8 +193,8 @@ class NoFreeSlotError(Exception):
     """Charmap probe chain full, or no free glyph slot without allow_growth."""
 
 
-#   s8 x_offset, s8 y_offset, u8 width, u8 height,
-#   u16 u0,u1,v0,v1, s16 advance16, s16 kerning (-1), s16 ascent
+#   x_offset (int8), y_offset (int8), width (uint8), height (uint8),
+#   u0,u1,v0,v1 (uint16), advance16 (int8), kerning (int8) (-1), ascent (int8)
 _GLYPH_REC_FORMAT = "<bbBB4H3h"
 
 
@@ -545,7 +545,7 @@ class ConkerFont:
 
     @property
     def line_height(self):
-        """Font-wide line height (inter-line spacing), s32 at LINE_HEIGHT_FIELD."""
+        """Font-wide line height (inter-line spacing), (int32) at LINE_HEIGHT_FIELD."""
         return struct.unpack_from("<i", self.data, LINE_HEIGHT_FIELD)[0]
 
     def set_line_height(self, value):
