@@ -258,7 +258,9 @@ class Glyph:
                                 (start_y, y_div, y_off), (end_y, y_div, y_off)):
             if not math.isfinite(pixel):
                 raise ValueError("Coordinates must be finite numbers")
-            raw = round((pixel - off) * div)
+            # truncation, not rounding: it reproduces the UV rectangle of every glyph of the
+            # shipped ConkerFont (197 of 197; round() only 55)
+            raw = int((pixel - off) * div)
             if not 0 <= raw <= SPECIAL_GLYPH_RAW_THRESHOLD:
                 raise ValueError(
                     f"Coordinate {pixel:g} is outside the texture range of this profile"
