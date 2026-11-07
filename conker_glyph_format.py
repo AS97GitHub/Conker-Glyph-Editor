@@ -78,11 +78,12 @@ DESCRIPTOR_HEADER = bytes.fromhex("010502000000")
 
 # Font-wide metrics, absolute file offsets:
 #   0x4F8 (int32)line_height, 0x4FC (int32) space_width, 0x500 (uint16) atlas W/H
-#   0x4D8 (uint32) fallback code point (U+25A1 in shipped fonts)
+#   0x4D8 (uint32) fallback character: drawn for every code missing from the charmap
+#                  (U+25A1 in shipped fonts)
 #   0x4E4 (uint32) max hash probes
 LINE_HEIGHT_FIELD = 0x4F8
 SPACE_WIDTH_FIELD = 0x4FC
-HEADER_CODE_FIELD = 0x4D8
+FALLBACK_FIELD = 0x4D8
 SPACE_CODE = 0x20
 
 # Glyph rectangle coordinates (start_x/end_x/start_y/end_y_raw) are uint16 values in a
@@ -194,32 +195,32 @@ class NoFreeSlotError(Exception):
 
 
 #   x_offset (int8), y_offset (int8), width (uint8), height (uint8),
-#   u0,u1,v0,v1 (uint16), advance16 (int8), kerning (int8) (-1), ascent (int8)
+#   u0,u1,v0,v1 (uint16), advance (int16), kerning (int16, -1 in every shipped font),
+#   ascent (int16, baseline - y)
 _GLYPH_REC_FORMAT = "<bbBB4H3h"
 
 
 class Glyph:
     __slots__ = (
-        "index", "unknown_field", "xy_offset", "glyph_wh",
+        "index", "x_offset", "y_offset", "width", "height",
         "start_x_raw", "end_x_raw", "start_y_raw", "end_y_raw",
-        "advance_lo", "advance_hi", "kerning", "ascent", "advance16",
+        "advance", "kerning", "ascent",
         "is_special", "char",
     )
 
     def __init__(self, index):
         self.index = index
-        self.unknown_field = 0
-        self.xy_offset = 0
-        self.glyph_wh = 0
+        self.x_offset = 0
+        self.y_offset = 0
+        self.width = 0          # stored byte; the rectangle is (width - 1) pixels wide
+        self.height = 0
         self.start_x_raw = 0
         self.end_x_raw = 0
         self.start_y_raw = 0
         self.end_y_raw = 0
-        self.advance_lo = 0
-        self.advance_hi = 0
+        self.advance = 0
         self.kerning = -1
         self.ascent = 0
-        self.advance16 = 0
         self.is_special = False
         self.char = ""  # Populated externally from charmap, can be empty
 
@@ -257,7 +258,7 @@ class Glyph:
                                 (start_y, y_div, y_off), (end_y, y_div, y_off)):
             if not math.isfinite(pixel):
                 raise ValueError("Coordinates must be finite numbers")
-            raw = int((pixel - off) * div)
+            raw = round((pixel - off) * div)
             if not 0 <= raw <= SPECIAL_GLYPH_RAW_THRESHOLD:
                 raise ValueError(
                     f"Coordinate {pixel:g} is outside the texture range of this profile"
@@ -290,6 +291,9 @@ class ConkerFont:
             raise ValueError(f"{path}: does not look like a CAFF container (magic={self.data[0:4]!r})")
         if len(self.data) < GLYPH_TABLE_OFFSET:
             raise ValueError(f"{path}: truncated file (no font object in the header)")
+        data_start = self._u32(SECTION_DATA_OFFSET_FIELD)
+        if self.data[data_start:data_start + 4] != b"font":
+            raise ValueError(f"{path}: a CAFF file, but not a font (.data does not start with 'font')")
 
         detected = None
         if profile_name is None:
@@ -326,18 +330,10 @@ class ConkerFont:
         for i in range(self.glyph_count):
             off = GLYPH_TABLE_OFFSET + i * GLYPH_REC_SIZE
             g = Glyph(i)
-            (xoff, yoff, w, h, g.start_x_raw, g.end_x_raw, g.start_y_raw, g.end_y_raw,
-             advance16, kerning, ascent) = struct.unpack_from(
+            (g.x_offset, g.y_offset, g.width, g.height,
+             g.start_x_raw, g.end_x_raw, g.start_y_raw, g.end_y_raw,
+             g.advance, g.kerning, g.ascent) = struct.unpack_from(
                 _GLYPH_REC_FORMAT, self.data, off)
-            # Editor-compatible aliases (xy_offset/glyph_wh, advance_lo/advance_hi, unknown_field)
-            g.xy_offset = ((yoff & 0xFF) << 8) | (xoff & 0xFF)
-            g.glyph_wh = ((h & 0xFF) << 8) | (w & 0xFF)
-            g.advance_lo = advance16 & 0xFF
-            g.advance_hi = (advance16 >> 8) & 0xFF
-            g.unknown_field = ascent & 0xFFFF
-            g.kerning = kerning
-            g.ascent = ascent
-            g.advance16 = advance16
             g.is_special = max(
                 g.start_x_raw, g.end_x_raw, g.start_y_raw, g.end_y_raw
             ) > SPECIAL_GLYPH_RAW_THRESHOLD
@@ -482,7 +478,7 @@ class ConkerFont:
           right when the glyphs keep their size and place and the picture just has
           more room (raises ValueError if some rectangle would fall outside a smaller
           texture).
-        Glyph Width/Height, bearings and advance16 are on-screen units and are never
+        Glyph Width/Height, bearings and advance are on-screen units and are never
         touched, so text keeps its size either way.
 
         Width must be a multiple of TEXTURE_WIDTH_ALIGNMENT, both sides at most
@@ -555,7 +551,7 @@ class ConkerFont:
 
     @property
     def space_width(self):
-        """Width of the space character (font-wide; space glyph advance16 is ignored)."""
+        """Width of the space character (font-wide; the space glyph's own advance is ignored)."""
         return struct.unpack_from("<i", self.data, SPACE_WIDTH_FIELD)[0]
 
     def set_space_width(self, width):
@@ -564,25 +560,19 @@ class ConkerFont:
         struct.pack_into("<i", self.data, SPACE_WIDTH_FIELD, width)
 
     def is_space_glyph(self, glyph_index):
-        """True for the glyph U+0020 maps to - the one whose own advance16 the game ignores."""
+        """True for the glyph U+0020 maps to - the one whose own advance the game ignores."""
         return self.charmap.get(SPACE_CODE) == glyph_index
 
     @property
-    def header_code(self):
-        """Fallback Unicode code point (HEADER_CODE_FIELD); U+25A1 in shipped fonts."""
-        return self._u32(HEADER_CODE_FIELD)
-
-    def set_header_code(self, code):
-        if not (isinstance(code, int) and 0 <= code < SENTINEL):
-            raise ValueError("Fallback must be a BMP code point other than U+FFFF")
-        struct.pack_into("<I", self.data, HEADER_CODE_FIELD, code)
-
-    @property
     def fallback(self):
-        return self.header_code
+        """Fallback Unicode code point (FALLBACK_FIELD): the character the game draws
+        for every code the charmap does not have; U+25A1 in shipped fonts."""
+        return self._u32(FALLBACK_FIELD)
 
     def set_fallback(self, code):
-        self.set_header_code(code)
+        if not (isinstance(code, int) and 0 <= code < SENTINEL):
+            raise ValueError("Fallback must be a BMP code point other than U+FFFF")
+        struct.pack_into("<I", self.data, FALLBACK_FIELD, code)
 
     @property
     def max_probes(self):
@@ -1059,27 +1049,11 @@ class ConkerFont:
         i = glyph.index
         if not (0 <= i < len(self.glyphs)):
             raise ValueError(f"glyph index must be between 0 and {len(self.glyphs) - 1}")
-        off = GLYPH_TABLE_OFFSET + i * GLYPH_REC_SIZE
-        xoff = glyph.xy_offset & 0xFF
-        if xoff >= 128:
-            xoff -= 256
-        yoff = (glyph.xy_offset >> 8) & 0xFF
-        if yoff >= 128:
-            yoff -= 256
-        w = glyph.glyph_wh & 0xFF
-        h = (glyph.glyph_wh >> 8) & 0xFF
-        advance16 = glyph.advance_lo | (glyph.advance_hi << 8)
-        if advance16 >= 0x8000:
-            advance16 -= 0x10000
-        kerning = getattr(glyph, "kerning", -1)
-        ascent = glyph.unknown_field
-        if ascent >= 0x8000:
-            ascent -= 0x10000
         struct.pack_into(
-            _GLYPH_REC_FORMAT, self.data, off,
-            xoff, yoff, w, h,
+            _GLYPH_REC_FORMAT, self.data, GLYPH_TABLE_OFFSET + i * GLYPH_REC_SIZE,
+            glyph.x_offset, glyph.y_offset, glyph.width, glyph.height,
             glyph.start_x_raw, glyph.end_x_raw, glyph.start_y_raw, glyph.end_y_raw,
-            advance16, kerning, ascent,
+            glyph.advance, glyph.kerning, glyph.ascent,
         )
         self.glyphs[i] = glyph
 
@@ -1128,4 +1102,4 @@ class ConkerFont:
         # Keep Glyph Width/Height in sync with the atlas rectangle (UI shows stored-1).
         w_px = max(0, int(round(end_x)) - int(round(start_x)))
         h_px = max(0, int(round(end_y)) - int(round(start_y)))
-        glyph.glyph_wh = (min(255, h_px + 1) << 8) | min(255, w_px + 1)
+        glyph.width, glyph.height = min(255, w_px + 1), min(255, h_px + 1)

@@ -2,8 +2,8 @@
 conker_texture.py - Gray8 font texture helpers for Conker: Live & Reloaded CAFF
 font files (default.bin).
 
-The texture is the whole .gpu section at the end of the file: W*H consecutive
-grayscale bytes, no header and no padding (W*H is a multiple of 32 for every
+The texture is the whole .gpu section at the end of the file (D3D format 0x13 =
+LIN_L8, per the game code): W*H consecutive grayscale bytes, no header and no padding (W*H is a multiple of 32 for every
 shipped font).  The section starts right behind the .data section; that offset is
 not 32-byte aligned in the file and it moves whenever glyphs are added or deleted,
 so it is always taken from the file's own header (never hardcoded).  The size of

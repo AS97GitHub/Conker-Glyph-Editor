@@ -608,16 +608,16 @@ class GlyphEditorApp:
             return "(no character mapped)"
         return ", ".join(self._char_display(c) for c in glyph_codes)
 
-    def _header_code_warning(self, glyph_codes):
-        """Extra text for confirmation dialogs when the glyph is the one the font
-        header refers to (its purpose is unknown, it may be the fallback glyph)."""
-        code = self.font.header_code
+    def _fallback_warning(self, glyph_codes):
+        """Extra text for confirmation dialogs when the glyph is the font's fallback
+        character."""
+        code = self.font.fallback
         if code not in glyph_codes:
             return ""
         return (
-            f"\n\nWARNING: the font header refers to U+{code:04X} ({self._char_display(code)}) "
-            "and this glyph is the one mapped to it. It is probably the character the game "
-            "shows for unknown symbols; removing it may stop the game from starting."
+            f"\n\nWARNING: U+{code:04X} ({self._char_display(code)}) is the font's fallback "
+            "character: the game draws it for every character the font does not have, and "
+            "this glyph is the one mapped to it."
         )
 
     def _mark_modified(self, message):
@@ -778,7 +778,6 @@ class GlyphEditorApp:
         props.pack(fill=tk.X, padx=(0, 4), pady=4)
 
         self.prop_vars = {}
-        self.prop_labels = {}
         prop_fields = [
             ("index", "Index"),
             ("start_x", "Start X"),
@@ -789,16 +788,14 @@ class GlyphEditorApp:
             ("glyph_height", "Glyph Height (↕)"),
             ("x_offset", "X Offset (-←/+→)"),
             ("y_offset", "Y Offset (-↑/+↓)"),
-            ("advance_lo", "Advance"),
+            ("advance", "Advance"),
             ("kerning", "Kerning"),
             ("ascent", "Ascent"),
         ]
         for key, label in prop_fields:
             row = ttk.Frame(props)
             row.pack(fill=tk.X, pady=(2, 1))
-            label_widget = ttk.Label(row, text=label + ":", width=17, anchor="e")
-            label_widget.pack(side=tk.LEFT, padx=(0, 2))
-            self.prop_labels[key] = label_widget
+            ttk.Label(row, text=label + ":", width=17, anchor="e").pack(side=tk.LEFT, padx=(0, 2))
             var = tk.StringVar(value="")
             entry = ttk.Entry(row, textvariable=var, width=12)
             entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 2))
@@ -1360,19 +1357,6 @@ class GlyphEditorApp:
         self.select_glyph(glyph_index, preferred_code=code)
 
     @staticmethod
-    def _byte_to_signed(unsigned_val):
-        """Converts a raw 0-255 byte value to its signed int8 reading (-128..127)."""
-        return unsigned_val - 256 if unsigned_val > 127 else unsigned_val
-
-    @staticmethod
-    def _signed_to_byte(signed_val):
-        """Converts a signed int8 value (-128..127) back to the raw 0-255 byte
-        stored in the file."""
-        if not (-128 <= signed_val <= 127):
-            raise ValueError("value must be between -128 and 127 (it's a signed byte)")
-        return signed_val + 256 if signed_val < 0 else signed_val
-
-    @staticmethod
     def _parse_character(value):
         """Parse one BMP character or a U+XXXX / 0xXXXX code-point literal."""
         error = "Character must be one symbol or U+XXXX"
@@ -1409,30 +1393,20 @@ class GlyphEditorApp:
             self.selected_code = None
 
         self.prop_vars["index"].set(str(g.index))
-        # xy_offset is stored as one uint16 in the file, but behaves as two independent
-        # bytes. CONFIRMED IN-GAME: lo byte = X Bearing (horizontal offset from the
-        # baseline - negative shifts left, positive shifts right), hi byte = Y Bearing
-        # (vertical offset from the baseline - positive moves the glyph down, negative
-        # moves it up). Displayed/edited here as SIGNED int8 (-128..127),
-        # since the raw unsigned readings (e.g. 254/255) only made sense once
-        # reinterpreted as small negative numbers (-2/-1).
-        xy_hi, xy_lo = g.xy_offset >> 8, g.xy_offset & 0xFF
-        self.prop_vars["x_offset"].set(str(self._byte_to_signed(xy_lo)))
-        self.prop_vars["y_offset"].set(str(self._byte_to_signed(xy_hi)))
-        # glyph_wh is stored as one uint16 in the file, but behaves as two INDEPENDENT
-        # single-byte values. CONFIRMED IN-GAME: lo byte = Glyph Width, hi byte =
-        # Glyph Height - changing either one visibly stretches/squashes the glyph on
-        # screen along that axis (not just the atlas rectangle size).
-        # Displayed with -1 offset for user convenience.
-        wh_hi, wh_lo = g.glyph_wh >> 8, g.glyph_wh & 0xFF
-        self.prop_vars["glyph_width"].set(str(wh_lo - 1))
-        self.prop_vars["glyph_height"].set(str(wh_hi - 1))
-        # advance_lo = lo byte of the glyph's advance (int16). Space width is font-wide
-        # (Font Metrics panel); the game ignores U+0020's own advance.
-        self.prop_labels["advance_lo"].config(text="Advance:")
-        self.prop_vars["advance_lo"].set(str(g.advance_lo))
-        self.prop_vars["kerning"].set(str(getattr(g, "kerning", -1)))
-        self.prop_vars["ascent"].set(str(g.unknown_field))
+        # X/Y Offset are signed bytes (CONFIRMED IN-GAME): X shifts the glyph from the
+        # pen (negative left, positive right), Y from the top of the line (positive down,
+        # negative up). Width/Height are the glyph's on-screen size (CONFIRMED IN-GAME:
+        # changing one stretches/squashes the glyph on that axis, not just the atlas
+        # rectangle) and are displayed with -1 offset for user convenience. Advance,
+        # Kerning and Ascent are signed 16-bit values. Space width is font-wide (Font
+        # Metrics panel); the game ignores U+0020's own advance.
+        self.prop_vars["x_offset"].set(str(g.x_offset))
+        self.prop_vars["y_offset"].set(str(g.y_offset))
+        self.prop_vars["glyph_width"].set(str(g.width - 1))
+        self.prop_vars["glyph_height"].set(str(g.height - 1))
+        self.prop_vars["advance"].set(str(g.advance))
+        self.prop_vars["kerning"].set(str(g.kerning))
+        self.prop_vars["ascent"].set(str(g.ascent))
 
         pixels = self.font.to_pixels(g)
         if pixels:
@@ -1525,6 +1499,16 @@ class GlyphEditorApp:
             f"fallback=U+{fallback:04X}"
         )
 
+    def _int_field(self, key, label, low, high):
+        """Integer from the property entry ``key``; ValueError if it is not one in low..high."""
+        try:
+            value = int(self.prop_vars[key].get())
+        except ValueError:
+            raise ValueError(f"{label} must be an integer") from None
+        if not low <= value <= high:
+            raise ValueError(f"{label} must be an integer between {low} and {high}")
+        return value
+
     def apply_property_edits(self):
         if self.font is None or self.selected_index is None:
             return
@@ -1532,38 +1516,14 @@ class GlyphEditorApp:
         g = orig.clone()
 
         try:
-            # x_offset and y_offset are treated as two INDEPENDENT single bytes,
-            # entered/displayed as SIGNED int8 (-128..127) - see select_glyph for why.
-            xy_lo = self._signed_to_byte(int(self.prop_vars["x_offset"].get()))
-            xy_hi = self._signed_to_byte(int(self.prop_vars["y_offset"].get()))
-            g.xy_offset = (xy_hi << 8) | xy_lo
-
-            # glyph_width and glyph_height are likewise INDEPENDENT single bytes, each
-            # validated and packed separately. The user enters them with a -1
-            # offset, so 1 is added back when storing.
-            wh_lo = int(self.prop_vars["glyph_width"].get()) + 1
-            wh_hi = int(self.prop_vars["glyph_height"].get()) + 1
-            if not (0 <= wh_lo <= 255):
-                raise ValueError("Glyph Width must be an integer between -1 and 254 (displayed with -1 offset)")
-            if not (0 <= wh_hi <= 255):
-                raise ValueError("Glyph Height must be an integer between -1 and 254 (displayed with -1 offset)")
-            g.glyph_wh = (wh_hi << 8) | wh_lo
-
-            advance_lo_val = int(self.prop_vars["advance_lo"].get())
-            if not (0 <= advance_lo_val <= 255):
-                raise ValueError("Advance must be an integer between 0 and 255")
-
-            g.advance_lo = advance_lo_val
-
-            kerning_val = int(self.prop_vars["kerning"].get())
-            if not (-32768 <= kerning_val <= 32767):
-                raise ValueError("Kerning must be an integer between -32768 and 32767")
-            g.kerning = kerning_val
-
-            ascent_val = int(self.prop_vars["ascent"].get())
-            if not (0 <= ascent_val <= 65535):
-                raise ValueError("Ascent must be an integer between 0 and 65535")
-            g.unknown_field = ascent_val
+            g.x_offset = self._int_field("x_offset", "X Offset", -128, 127)
+            g.y_offset = self._int_field("y_offset", "Y Offset", -128, 127)
+            # entered with a -1 offset, so 1 is added back when storing
+            g.width = self._int_field("glyph_width", "Glyph Width", -1, 254) + 1
+            g.height = self._int_field("glyph_height", "Glyph Height", -1, 254) + 1
+            g.advance = self._int_field("advance", "Advance", -32768, 32767)
+            g.kerning = self._int_field("kerning", "Kerning", -32768, 32767)
+            g.ascent = self._int_field("ascent", "Ascent", -32768, 32767)
 
             if not g.is_special:
                 rect = tuple(float(self.prop_vars[k].get()) for k in ("start_x", "start_y", "end_x", "end_y"))
@@ -1703,7 +1663,7 @@ class GlyphEditorApp:
                     "unmapped and every later glyph moves down by one index. The file "
                     "shrinks and everything behind the glyph table moves up. This "
                     "cannot be undone once saved."
-                    + self._header_code_warning(glyph_codes),
+                    + self._fallback_warning(glyph_codes),
                     icon="warning"
                 )
                 if not confirmed:
