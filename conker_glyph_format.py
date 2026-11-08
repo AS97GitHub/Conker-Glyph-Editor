@@ -84,7 +84,6 @@ DESCRIPTOR_HEADER = bytes.fromhex("010502000000")
 LINE_HEIGHT_FIELD = 0x4F8
 SPACE_WIDTH_FIELD = 0x4FC
 FALLBACK_FIELD = 0x4D8
-SPACE_CODE = 0x20
 
 # Glyph rectangle coordinates (start_x/end_x/start_y/end_y_raw) are uint16 values in a
 # 0..16384 space: raw = (pixel - offset) * 16384 / texture_size (see
@@ -560,10 +559,6 @@ class ConkerFont:
         if not isinstance(width, int) or not (0 <= width <= 255):
             raise ValueError("Space Width must be an integer between 0 and 255")
         struct.pack_into("<i", self.data, SPACE_WIDTH_FIELD, width)
-
-    def is_space_glyph(self, glyph_index):
-        """True for the glyph U+0020 maps to - the one whose own advance the game ignores."""
-        return self.charmap.get(SPACE_CODE) == glyph_index
 
     @property
     def fallback(self):
