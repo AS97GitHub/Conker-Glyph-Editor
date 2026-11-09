@@ -3,7 +3,7 @@
 
 # Conker Glyph Editor
 
-A visual bitmap font editor for **Conker: Live & Reloaded** (Xbox). It allows you to inspect, edit glyph metrics and rectangles, manage the character map, and replace the embedded Gray8 texture atlas for `default.bin` files (CAFF format).
+A visual bitmap font editor for **Conker: Live & Reloaded** (Xbox). It allows you to inspect, edit glyph metrics and rectangles, manage the character map, and replace the embedded Gray8 texture atlas for `default.bin` files (CAFF format `CAFF28.01.05.0031`).
 
 ## Features
 * **Visual Editing:** Move and resize glyph rectangles directly on the texture atlas with corner handles.
