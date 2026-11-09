@@ -13,8 +13,8 @@ A visual bitmap font editor for **Conker: Live & Reloaded** (Xbox). It allows yo
 * **Texture Import/Export:** Export the atlas to PNG, or import a new one from PNG/BMP/clipboard (any size with width a multiple of 64, up to 4096).
 * **Font Profiles:** Auto-detects and supports `ConkerFont`, `ConkerFontJapanese`, `FrontendTitle`, and `FrontendTitleJapanese`.
 * **Font-wide Metrics:** Edit line height, space width, and fallback character.
-* **Dark Theme UI:** Built with Tkinter, featuring a modern dark interface.
 * **Clipboard Support:** Copy/paste the texture atlas via **Ctrl+C** / **Ctrl+V** (Windows, macOS, Linux with xclip/wl-clipboard).
+* **Dark Theme UI:** Built with Tkinter, featuring a modern dark interface.
 
 ## Files
 * `conker_glyph_editor.py` — the main graphical editor (Tkinter GUI).
