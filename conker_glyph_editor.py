@@ -518,6 +518,14 @@ messagebox = _MessageBoxes()
 filedialog = _FileDialogs()
 
 
+# Visible labels for the blank characters (space, no-break space, ideographic space)
+_SPACE_LABELS = {
+    0x20: "\u02e2\u1d56",
+    0xA0: "\u207f\u1d47\u02e2\u1d56",
+    0x3000: "\u2071\u1d48\u02e2\u1d56",
+}
+
+
 class GlyphEditorApp:
     def __init__(self, root):
         self.root = root
@@ -597,7 +605,10 @@ class GlyphEditorApp:
 
     @staticmethod
     def _char_display(code, fallback=None):
-        """Printable form of a code point; control codes become U+XXXX (or fallback)."""
+        """Printable form of a code point; blank characters get a visible label,
+        control codes become U+XXXX (or fallback)."""
+        if code in _SPACE_LABELS:
+            return _SPACE_LABELS[code]
         if code >= 0x20:
             return chr(code)
         return fallback if fallback is not None else f"U+{code:04X}"
@@ -1270,15 +1281,14 @@ class GlyphEditorApp:
             # All characters mapped to this glyph, sorted by code point
             glyph_codes = sorted(codes_by_glyph.get(g.index, ()))
             if glyph_codes:
-                chars = "".join(chr(code) for code in glyph_codes)
+                chars = "".join(_SPACE_LABELS.get(code, chr(code)) for code in glyph_codes)
                 codes = ", ".join(f"U+{code:04X}" for code in glyph_codes)
                 char_disp = f"{chars}  ({codes})"
                 preferred_code = glyph_codes[0]
             else:
                 char_disp = "·"
                 preferred_code = None
-            special = " [spec]" if g.is_special else ""
-            rows.append(f"{g.index:3d}  char={char_disp}{special}")
+            rows.append(f"{g.index:3d}  char={char_disp}")
             row_data.append((g.index, preferred_code))
 
         if rows:
