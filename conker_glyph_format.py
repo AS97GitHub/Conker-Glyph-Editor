@@ -104,7 +104,7 @@ SPECIAL_GLYPH_RAW_THRESHOLD = 60000
 # ConkerFont.replace_texture).  The profile only carries the pixel offsets.
 UV_RANGE = 16384
 FONT_PROFILES = {
-    name: {"X_OFFSET": -0.5, "Y_OFFSET": -0.5}
+    name: {"offset_x": -0.5, "offset_y": -0.5}
     for name in ("ConkerFont", "ConkerFontJapanese", "FrontendTitle", "FrontendTitleJapanese")
 }
 
@@ -193,7 +193,7 @@ class NoFreeSlotError(Exception):
     """Charmap probe chain full, or no free glyph slot without allow_growth."""
 
 
-#   x_offset (int8), y_offset (int8), width (uint8), height (uint8),
+#   offset_x (int8), offset_y (int8), width (uint8), height (uint8),
 #   u0,u1,v0,v1 (uint16), advance (int16), kerning (int16, -1 in every shipped font),
 #   ascent (int16, baseline - y)
 _GLYPH_REC_FORMAT = "<bbBB4H3h"
@@ -201,7 +201,7 @@ _GLYPH_REC_FORMAT = "<bbBB4H3h"
 
 class Glyph:
     __slots__ = (
-        "index", "x_offset", "y_offset", "width", "height",
+        "index", "offset_x", "offset_y", "width", "height",
         "start_x_raw", "end_x_raw", "start_y_raw", "end_y_raw",
         "advance", "kerning", "ascent",
         "is_special", "char",
@@ -209,8 +209,8 @@ class Glyph:
 
     def __init__(self, index):
         self.index = index
-        self.x_offset = 0
-        self.y_offset = 0
+        self.offset_x = 0
+        self.offset_y = 0
         self.width = 0          # stored byte; the rectangle is (width - 1) pixels wide
         self.height = 0
         self.start_x_raw = 0
@@ -331,7 +331,7 @@ class ConkerFont:
         for i in range(self.glyph_count):
             off = GLYPH_TABLE_OFFSET + i * GLYPH_REC_SIZE
             g = Glyph(i)
-            (g.x_offset, g.y_offset, g.width, g.height,
+            (g.offset_x, g.offset_y, g.width, g.height,
              g.start_x_raw, g.end_x_raw, g.start_y_raw, g.end_y_raw,
              g.advance, g.kerning, g.ascent) = struct.unpack_from(
                 _GLYPH_REC_FORMAT, self.data, off)
@@ -1048,7 +1048,7 @@ class ConkerFont:
             raise ValueError(f"glyph index must be between 0 and {len(self.glyphs) - 1}")
         struct.pack_into(
             _GLYPH_REC_FORMAT, self.data, GLYPH_TABLE_OFFSET + i * GLYPH_REC_SIZE,
-            glyph.x_offset, glyph.y_offset, glyph.width, glyph.height,
+            glyph.offset_x, glyph.offset_y, glyph.width, glyph.height,
             glyph.start_x_raw, glyph.end_x_raw, glyph.start_y_raw, glyph.end_y_raw,
             glyph.advance, glyph.kerning, glyph.ascent,
         )
@@ -1089,7 +1089,7 @@ class ConkerFont:
         """(x_div, y_div, x_off, y_off) for the texture the file actually has."""
         w, h = self.texture_size
         p = self.profile
-        return UV_RANGE / w, UV_RANGE / h, p["X_OFFSET"], p["Y_OFFSET"]
+        return UV_RANGE / w, UV_RANGE / h, p["offset_x"], p["offset_y"]
 
     def to_pixels(self, glyph):
         return glyph.to_pixels(*self._pixel_scale())

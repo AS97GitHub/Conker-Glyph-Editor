@@ -526,6 +526,9 @@ _SPACE_LABELS = {
 }
 
 
+APP_TITLE = "Conker Glyph Editor"
+
+
 class GlyphEditorApp:
     def __init__(self, root):
         self.root = root
@@ -535,7 +538,7 @@ class GlyphEditorApp:
         self.colors = apply_theme(root)
         set_dark_titlebar(root)
         _darken_tk_dialog_titlebars(root)
-        self.root.title("Conker Glyph Editor")
+        self.root.title(APP_TITLE)
         self.root.geometry("1200x760")
 
         # Set window icon
@@ -630,6 +633,13 @@ class GlyphEditorApp:
             "character: the game draws it for every character the font does not have, and "
             "this glyph is the one mapped to it."
         )
+
+    def _update_title(self):
+        """Window title: app name, plus the open file's name (with extension)."""
+        if self.font is None:
+            self.root.title(APP_TITLE)
+        else:
+            self.root.title(f"{APP_TITLE} \u2014 {os.path.basename(self.font.path)}")
 
     def _mark_modified(self, message):
         self.unsaved_changes = True
@@ -795,22 +805,43 @@ class GlyphEditorApp:
             ("start_y", "Start Y"),
             ("end_x", "End X"),
             ("end_y", "End Y"),
-            ("glyph_width", "Glyph Width (↔)"),
-            ("glyph_height", "Glyph Height (↕)"),
-            ("x_offset", "X Offset (-←/+→)"),
-            ("y_offset", "Y Offset (-↑/+↓)"),
+            ("cell_width", "Cell Width"),
+            ("cell_height", "Cell Height"),
+            ("offset_x", "Offset X"),
+            ("offset_y", "Offset Y"),
             ("advance", "Advance"),
             ("kerning", "Kerning"),
             ("ascent", "Ascent"),
         ]
+        
         for key, label in prop_fields:
             row = ttk.Frame(props)
             row.pack(fill=tk.X, pady=(2, 1))
-            ttk.Label(row, text=label + ":", width=17, anchor="e").pack(side=tk.LEFT, padx=(0, 2))
+            ttk.Label(row, text=label + ":", width=14, anchor="e").pack(side=tk.LEFT, padx=(0, 2))
+            
             var = tk.StringVar(value="")
-            entry = ttk.Entry(row, textvariable=var, width=12)
-            entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 2))
             self.prop_vars[key] = var
+
+            if key in ("offset_x", "offset_y"):
+                entry_frame = ttk.Frame(row)
+                entry_frame.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 2))
+
+                entry = ttk.Entry(entry_frame, textvariable=var,
+                                  width=12, style="Hint.TEntry")
+                entry.pack(fill=tk.X, expand=True)
+
+                hint_text = "-←/+→" if key == "offset_x" else "-↑/+↓"
+                hint = tk.Label(entry_frame, text=hint_text,
+                                background=PALETTE["field"],
+                                foreground=PALETTE["disabled"],
+                                font=self.ui_font,
+                                borderwidth=0, padx=0, pady=0)
+                hint.place(relx=1.0, x=-4, rely=0.5, anchor="e")
+                hint.bind("<Button-1>", lambda e, ent=entry: ent.focus_set())
+            else:
+                entry = ttk.Entry(row, textvariable=var, width=12)
+                entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 2))
+
             if key == "index":
                 entry.config(state="readonly")
 
@@ -826,7 +857,7 @@ class GlyphEditorApp:
         action_row = ttk.Frame(char_mgmt_frame)
         action_row.pack(fill=tk.X, pady=(2, 1))
 
-        ttk.Label(action_row, text="Action:", width=17, anchor="e").pack(
+        ttk.Label(action_row, text="Action:", width=14, anchor="e").pack(
             side=tk.LEFT, padx=(0, 2)
         )
 
@@ -842,7 +873,7 @@ class GlyphEditorApp:
         replace_row = ttk.Frame(char_mgmt_frame)
         replace_row.pack(fill=tk.X, pady=(2, 1))
 
-        ttk.Label(replace_row, text="Old Char:", width=17, anchor="e").pack(
+        ttk.Label(replace_row, text="Old Char:", width=14, anchor="e").pack(
             side=tk.LEFT, padx=(0, 2)
         )
 
@@ -855,7 +886,7 @@ class GlyphEditorApp:
         char_mgmt_row = ttk.Frame(char_mgmt_frame)
         char_mgmt_row.pack(fill=tk.X, pady=(2, 1))
 
-        ttk.Label(char_mgmt_row, text="New Char:", width=17, anchor="e").pack(
+        ttk.Label(char_mgmt_row, text="New Char:", width=14, anchor="e").pack(
             side=tk.LEFT, padx=(0, 2)
         )
 
@@ -875,22 +906,40 @@ class GlyphEditorApp:
         for key, label, readonly in (
             ("line_height", "Line Height", False),
             ("space_width", "Space Width", False),
-            ("fallback", "Fallback (U+hex)", False),
+            ("fallback", "Fallback", False),
             ("atlas", "Atlas Size", True),
             ("max_probes", "Max Probes", True),
         ):
             row = ttk.Frame(metrics)
             row.pack(fill=tk.X, pady=(2, 1))
-            ttk.Label(row, text=label + ":", width=17, anchor="e").pack(side=tk.LEFT, padx=(0, 2))
+            ttk.Label(row, text=label + ":", width=14, anchor="e").pack(side=tk.LEFT, padx=(0, 2))
             var = tk.StringVar(value="")
+            
             if readonly:
                 ttk.Label(row, textvariable=var, anchor="w").pack(
                     side=tk.LEFT, fill=tk.X, expand=True
                 )
             else:
-                entry = ttk.Entry(row, textvariable=var, width=12)
-                entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 2))
+                if key == "fallback":
+                    entry_frame = ttk.Frame(row)
+                    entry_frame.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 2))
+
+                    entry = ttk.Entry(entry_frame, textvariable=var, width=12, style="Hint.TEntry")
+                    entry.pack(fill=tk.X, expand=True)
+
+                    hint = tk.Label(entry_frame, text="U+hex",
+                                    background=PALETTE["field"],
+                                    foreground=PALETTE["disabled"],
+                                    font=self.ui_font,
+                                    borderwidth=0, padx=0, pady=0)
+                    hint.place(relx=1.0, x=-4, rely=0.5, anchor="e")
+                    hint.bind("<Button-1>", lambda e, ent=entry: ent.focus_set())
+                else:
+                    entry = ttk.Entry(row, textvariable=var, width=12)
+                    entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 2))
+                    
             self.metric_vars[key] = var
+            
         ttk.Button(metrics, text="Apply Font Metrics", command=self.apply_font_metrics, padding=2).pack(
             fill=tk.X, padx=2, pady=2
         )
@@ -995,6 +1044,7 @@ class GlyphEditorApp:
         self.font = font
         self.current_file_path = path
         self.unsaved_changes = False
+        self._update_title()
 
         if not keep_selection:
             self.selected_index = None
@@ -1233,6 +1283,7 @@ class GlyphEditorApp:
         self.font.path = path               # later "Save (overwrite)" targets this file
         self.current_file_path = path
         self.unsaved_changes = False
+        self._update_title()
         self.status_var.set(f"Saved: {path}")
         return True
 
@@ -1410,10 +1461,10 @@ class GlyphEditorApp:
         # rectangle) and are displayed with -1 offset for user convenience. Advance,
         # Kerning and Ascent are signed 16-bit values. Space width is font-wide (Font
         # Metrics panel); the game ignores U+0020's own advance.
-        self.prop_vars["x_offset"].set(str(g.x_offset))
-        self.prop_vars["y_offset"].set(str(g.y_offset))
-        self.prop_vars["glyph_width"].set(str(g.width - 1))
-        self.prop_vars["glyph_height"].set(str(g.height - 1))
+        self.prop_vars["offset_x"].set(str(g.offset_x))
+        self.prop_vars["offset_y"].set(str(g.offset_y))
+        self.prop_vars["cell_width"].set(str(g.width - 1))
+        self.prop_vars["cell_height"].set(str(g.height - 1))
         self.prop_vars["advance"].set(str(g.advance))
         self.prop_vars["kerning"].set(str(g.kerning))
         self.prop_vars["ascent"].set(str(g.ascent))
@@ -1526,11 +1577,11 @@ class GlyphEditorApp:
         g = orig.clone()
 
         try:
-            g.x_offset = self._int_field("x_offset", "X Offset", -128, 127)
-            g.y_offset = self._int_field("y_offset", "Y Offset", -128, 127)
+            g.offset_x = self._int_field("offset_x", "X Offset", -128, 127)
+            g.offset_y = self._int_field("offset_y", "Y Offset", -128, 127)
             # entered with a -1 offset, so 1 is added back when storing
-            g.width = self._int_field("glyph_width", "Glyph Width", -1, 254) + 1
-            g.height = self._int_field("glyph_height", "Glyph Height", -1, 254) + 1
+            g.width = self._int_field("cell_width", "Glyph Width", -1, 254) + 1
+            g.height = self._int_field("cell_height", "Glyph Height", -1, 254) + 1
             g.advance = self._int_field("advance", "Advance", -32768, 32767)
             g.kerning = self._int_field("kerning", "Kerning", -32768, 32767)
             g.ascent = self._int_field("ascent", "Ascent", -32768, 32767)
@@ -1892,8 +1943,8 @@ class GlyphEditorApp:
         self.prop_vars["end_x"].set(f"{end_x_rounded}")
         self.prop_vars["end_y"].set(f"{end_y_rounded}")
         # Live Glyph Width/Height (display = pixel size; stored = size + 1)
-        self.prop_vars["glyph_width"].set(str(end_x_rounded - start_x_rounded))
-        self.prop_vars["glyph_height"].set(str(end_y_rounded - start_y_rounded))
+        self.prop_vars["cell_width"].set(str(end_x_rounded - start_x_rounded))
+        self.prop_vars["cell_height"].set(str(end_y_rounded - start_y_rounded))
 
         # Optimized redraw - only update selected glyph
         self._redraw_selected_glyph(start_x_rounded, start_y_rounded, end_x_rounded, end_y_rounded)
