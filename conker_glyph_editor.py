@@ -381,7 +381,7 @@ def _themed_dialog(title, message, icon, buttons, default, cancel, parent=None):
     row.pack(fill=tk.X)
     buttons_widgets = {}
     for key, label in reversed(buttons):
-        b = ttk.Button(row, text=label, width=10, command=lambda k=key: finish(k))
+        b = ttk.Button(row, text=label, width=12, command=lambda k=key: finish(k))
         b.pack(side=tk.RIGHT, padx=(6, 0))
         buttons_widgets[key] = b
 
@@ -791,9 +791,9 @@ class GlyphEditorApp:
         self.canvas.bind("<ButtonRelease-1>", self.on_canvas_release)
 
         # Right panel: selected glyph properties
-        right = ttk.Frame(main, width=265)
+        right = ttk.Frame(main, width=224)
         right.pack_propagate(False)
-        self._add_pane(right, min_width=200, weight=0)
+        self._add_pane(right, min_width=150, weight=0)
 
         props = ttk.LabelFrame(right, text="Glyph Properties")
         props.pack(fill=tk.X, padx=(0, 4), pady=4)
@@ -817,7 +817,7 @@ class GlyphEditorApp:
         for key, label in prop_fields:
             row = ttk.Frame(props)
             row.pack(fill=tk.X, pady=(2, 1))
-            ttk.Label(row, text=label + ":", width=14, anchor="e").pack(side=tk.LEFT, padx=(0, 2))
+            ttk.Label(row, text=label + ":", width=12, anchor="e").pack(side=tk.LEFT, padx=(0, 2))
             
             var = tk.StringVar(value="")
             self.prop_vars[key] = var
@@ -857,7 +857,7 @@ class GlyphEditorApp:
         action_row = ttk.Frame(char_mgmt_frame)
         action_row.pack(fill=tk.X, pady=(2, 1))
 
-        ttk.Label(action_row, text="Action:", width=14, anchor="e").pack(
+        ttk.Label(action_row, text="Action:", width=12, anchor="e").pack(
             side=tk.LEFT, padx=(0, 2)
         )
 
@@ -873,7 +873,7 @@ class GlyphEditorApp:
         replace_row = ttk.Frame(char_mgmt_frame)
         replace_row.pack(fill=tk.X, pady=(2, 1))
 
-        ttk.Label(replace_row, text="Old Char:", width=14, anchor="e").pack(
+        ttk.Label(replace_row, text="Old Char:", width=12, anchor="e").pack(
             side=tk.LEFT, padx=(0, 2)
         )
 
@@ -886,7 +886,7 @@ class GlyphEditorApp:
         char_mgmt_row = ttk.Frame(char_mgmt_frame)
         char_mgmt_row.pack(fill=tk.X, pady=(2, 1))
 
-        ttk.Label(char_mgmt_row, text="New Char:", width=14, anchor="e").pack(
+        ttk.Label(char_mgmt_row, text="New Char:", width=12, anchor="e").pack(
             side=tk.LEFT, padx=(0, 2)
         )
 
@@ -912,7 +912,7 @@ class GlyphEditorApp:
         ):
             row = ttk.Frame(metrics)
             row.pack(fill=tk.X, pady=(2, 1))
-            ttk.Label(row, text=label + ":", width=14, anchor="e").pack(side=tk.LEFT, padx=(0, 2))
+            ttk.Label(row, text=label + ":", width=12, anchor="e").pack(side=tk.LEFT, padx=(0, 2))
             var = tk.StringVar(value="")
             
             if readonly:
