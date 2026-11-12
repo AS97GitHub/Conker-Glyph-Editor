@@ -21,17 +21,29 @@ from PIL import Image, ImageTk
 from conker_clipboard import copy_image, paste_image, ClipboardError
 from conker_glyph_format import ConkerFont
 
+APP_TITLE = "Conker Glyph Editor"
+
+# --- Theme -------------------------------------------------------------
+# One palette for the whole UI (clam theme + classic tk widgets), so that no
+# widget keeps the default white background. Tweak colors here.
+PALETTE = {
+    "bg":       "#24292e",   # window / frames
+    "fg":       "#d9dcde",   # text
+    "field":    "#1d2125",   # entries, listboxes, help text, scrollbar troughs
+    "canvas":   "#1d2125",   # texture canvas
+    "button":   "#2f363d",   # buttons, inactive tabs, scrollbar thumbs
+    "active":   "#333b42",   # hover / pressed
+    "border":   "#41484f",
+    "select":   "#444d56",   # selection background
+    "disabled": "#959da5",
+    "tab_active": "#1d2125",   # active tab background
+    "button_border_hover": "#58a6ff",   # button border on hover
+}
 
 HANDLE_SIZE = 6          # Size of corner handle box for dragging (in screen pixels)
 DEFAULT_ZOOM = 4
 MIN_ZOOM, MAX_ZOOM = 1, 16
 MAX_DISPLAY_PIXELS = 32_000_000     # cap for the zoomed texture (it is held as a 4-byte-per-pixel image)
-
-# Operations of the "Character Management" panel; these ones ignore "New Char"
-# (new_glyph uses it as an optional character for the new glyph).
-CHAR_ACTIONS = ("add", "remove", "replace", "new_glyph", "delete_glyph")
-ACTIONS_WITHOUT_NEW_CHAR = ("remove", "delete_glyph")
-
 
 # Errors that mean "this file is unreadable/corrupt" (expected, user-facing):
 # ValueError - bad magic/charmap, invalid image dimensions
@@ -39,6 +51,11 @@ ACTIONS_WITHOUT_NEW_CHAR = ("remove", "delete_glyph")
 # struct.error - truncated file / corrupt header read via struct.unpack
 # DecompressionBombError - PIL refusing an absurdly large image
 EXPECTED_LOAD_ERRORS = (ValueError, OSError, struct.error, Image.DecompressionBombError)
+
+# Operations of the "Character Management" panel; these ones ignore "New Char"
+# (new_glyph uses it as an optional character for the new glyph).
+CHAR_ACTIONS = ("add", "remove", "replace", "new_glyph", "delete_glyph")
+ACTIONS_WITHOUT_NEW_CHAR = ("remove", "delete_glyph")
 
 # --- Fonts -------------------------------------------------------------
 # Preferred family first, then fallbacks (Windows font -> Linux metric-compatible
@@ -72,6 +89,7 @@ TAB_WIDTHS = {
     "Ubuntu": 8,
     "sans-serif": 8,
 }
+
 
 def _pick_family(root, candidates):
     """Return the first installed font family from candidates (case-insensitive), or None."""
@@ -121,24 +139,6 @@ def setup_bold_font(root, ui_font):
     fallback = tkfont.Font(root=root, font=ui_font)
     fallback.configure(weight="bold")
     return fallback
-
-
-# --- Theme -------------------------------------------------------------
-# One palette for the whole UI (clam theme + classic tk widgets), so that no
-# widget keeps the default white background. Tweak colors here.
-PALETTE = {
-    "bg":       "#24292e",   # window / frames
-    "fg":       "#d9dcde",   # text
-    "field":    "#1d2125",   # entries, listboxes, help text, scrollbar troughs
-    "canvas":   "#1d2125",   # texture canvas
-    "button":   "#2f363d",   # buttons, inactive tabs, scrollbar thumbs
-    "active":   "#333b42",   # hover / pressed
-    "border":   "#41484f",
-    "select":   "#444d56",   # selection background
-    "disabled": "#959da5",
-    "tab_active": "#1d2125",   # active tab background
-    "button_border_hover": "#58a6ff",   # button border on hover
-}
 
 
 def _theme_tk_file_dialog(root, bg, fg):
@@ -524,9 +524,6 @@ _SPACE_LABELS = {
     0xA0: "\u207f\u1d47\u02e2\u1d56",
     0x3000: "\u2071\u1d48\u02e2\u1d56",
 }
-
-
-APP_TITLE = "Conker Glyph Editor"
 
 
 class GlyphEditorApp:
